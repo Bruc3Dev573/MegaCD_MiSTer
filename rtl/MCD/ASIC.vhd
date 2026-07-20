@@ -1524,6 +1524,12 @@ begin
 	end process;
 	
 	PRAM_N <= '0' when PRMS /= PRS_IDLE or PRSS /= PRS_IDLE else '1';	
+	-- Pocket port: run flags derived from state, not pulsed regs — the
+	-- shared-flag set/clear race between the two banks' FSMs could eat
+	-- the pulse under latency jitter, livelocking the GFX engine
+	WR_GFX_RUN <= '1' when WR0A = WRA_GFX_ACCESS or WR1A = WRA_GFX_ACCESS else '0';
+	WR_DMA_RUN <= '1' when WR0A = WRA_DMA_ACCESS or WR1A = WRA_DMA_ACCESS else '0';
+	
 	PRG_A <= PRG_RAM_ADDR;
 	PRG_DO <= PRG_RAM_DO;
 	PRG_WRL_N <= not PRG_RAM_WRL;
@@ -1665,7 +1671,6 @@ begin
 			S68K_WORDRAM_DTACK_N <= '1';
 			WR0R <= ((others => '0'),(others => '0'),"1111",'0',"00","00");
 			WR1R <= ((others => '0'),(others => '0'),"1111",'0',"00","00");
-			WR_DMA_RUN <= '0';
 			WR0A <= WRA_IDLE;
 			WR1A <= WRA_IDLE;
 		elsif rising_edge(CLK) then
@@ -1691,7 +1696,6 @@ begin
 									WR0R.PM <= "00";
 									WR0R.EXEC <= '1';
 									WR0A <= WRA_DMA_ACCESS;
-									WR_DMA_RUN <= '1';
 								elsif S68K_WORD_RAM_SEL = '1' and S68K_A(19 downto 17) = "110" and S68K_WORDRAM_DTACK_N = '1' then
 									WR0R.A <= S68K_A(16 downto 1);
 									WR0R.DO <= S68K_DI;
@@ -1734,7 +1738,6 @@ begin
 								WR0R.PM <= "00";
 								WR0R.EXEC <= '1';
 								WR0A <= WRA_DMA_ACCESS;
-								WR_DMA_RUN <= '1';
 							elsif RET0 = '0' and GFX_SEL = '1' and GFX_ADDR(1) = '0' then
 								WR0R.A <= GFX_ADDR(17 downto 2);
 								WR0R.DO <= GFX_DO;
@@ -1742,7 +1745,6 @@ begin
 								WR0R.PM <= PM and (GFX_RMW&GFX_RMW);
 								WR0R.EXEC <= '1';
 								WR0A <= WRA_GFX_ACCESS;
-								WR_GFX_RUN <= '1';
 							elsif RET0 = '0' and S68K_WORD_RAM_SEL = '1' and S68K_A(19 downto 18) = "10" and S68K_A(1) = '0' and S68K_WORDRAM_DTACK_N = '1' then
 								WR0R.A <= S68K_A(17 downto 2);
 								WR0R.DO <= S68K_DI;
@@ -1803,16 +1805,10 @@ begin
 						end if;
 						
 					when WRA_DMA_END => 
-						if WR_DMA_RUN = '1' then
-							WR_DMA_RUN <= '0';
-							WR0A <= WRA_IDLE;
-						end if;
+						WR0A <= WRA_IDLE;
 						
 					when WRA_GFX_END => 
-						if WR_GFX_RUN = '1' then
-							WR_GFX_RUN <= '0';
-							WR0A <= WRA_IDLE;
-						end if;
+						WR0A <= WRA_IDLE;
 						
 					when others => null;
 				end case;
@@ -1838,7 +1834,6 @@ begin
 									WR1R.PM <= "00";
 									WR1R.EXEC <= '1';
 									WR1A <= WRA_DMA_ACCESS;
-									WR_DMA_RUN <= '1';
 								elsif S68K_WORD_RAM_SEL = '1' and S68K_A(19 downto 17) = "110" and S68K_WORDRAM_DTACK_N = '1' then
 									WR1R.A <= S68K_A(16 downto 1);
 									WR1R.DO <= S68K_DI;
@@ -1881,7 +1876,6 @@ begin
 								WR1R.PM <= "00";
 								WR1R.EXEC <= '1';
 								WR1A <= WRA_DMA_ACCESS;
-								WR_DMA_RUN <= '1';
 							elsif RET0 = '0' and GFX_SEL = '1' and GFX_ADDR(1) = '1' then
 								WR1R.A <= GFX_ADDR(17 downto 2);
 								WR1R.DO <= GFX_DO;
@@ -1889,7 +1883,6 @@ begin
 								WR1R.PM <= PM and (GFX_RMW&GFX_RMW);
 								WR1R.EXEC <= '1';
 								WR1A <= WRA_GFX_ACCESS;
-								WR_GFX_RUN <= '1';
 							elsif RET0 = '0' and S68K_WORD_RAM_SEL = '1' and S68K_A(19 downto 18) = "10" and S68K_A(1) = '1' and S68K_WORDRAM_DTACK_N = '1' then
 								WR1R.A <= S68K_A(17 downto 2);
 								WR1R.DO <= S68K_DI;
@@ -1950,16 +1943,10 @@ begin
 						end if;
 						
 					when WRA_DMA_END => 
-						if WR_DMA_RUN = '1' then
-							WR_DMA_RUN <= '0';
-							WR1A <= WRA_IDLE;
-						end if;
+						WR1A <= WRA_IDLE;
 						
 					when WRA_GFX_END => 
-						if WR_GFX_RUN = '1' then
-							WR_GFX_RUN <= '0';
-							WR1A <= WRA_IDLE;
-						end if;
+						WR1A <= WRA_IDLE;
 						
 					when others => null;
 				end case;
