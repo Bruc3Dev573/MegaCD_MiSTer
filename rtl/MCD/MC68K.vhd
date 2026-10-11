@@ -30,7 +30,16 @@ entity M68K_WRAP is
 		E				: out std_logic;
 		BERR_N		: in std_logic;
 		RESET_O_N	: out std_logic;
-		HALT_O_N		: out std_logic
+		HALT_O_N		: out std_logic;
+
+		--Savestate. SS_FREEZE gates the phase enables. SS_FROZEN reports that the
+		--gate is engaged.
+		SS_FREEZE	: in std_logic := '0';
+		SS_FROZEN	: out std_logic;
+		SS_ADDR		: in std_logic_vector(7 downto 0) := (others => '0');
+		SS_WR_DATA	: in std_logic_vector(15 downto 0) := (others => '0');
+		SS_WR_EN		: in std_logic := '0';
+		SS_RD_DATA	: out std_logic_vector(15 downto 0)
 	);
 end M68K_WRAP;
 
@@ -38,6 +47,14 @@ architecture rtl of M68K_WRAP is
 
 	signal extReset		: std_logic;
 	signal pwrUp		: std_logic;
+
+	signal AS_N_INT		: std_logic;
+	signal BUS_STARTING	: std_logic;
+	signal FREEZE_ENG		: std_logic;
+	signal LAST_WAS_P		: std_logic;
+	signal PULSE			: std_logic;
+	signal CLKEN_P_G		: std_logic;
+	signal CLKEN_N_G		: std_logic;
 	
 	COMPONENT fx68k
 	PORT
@@ -70,7 +87,14 @@ architecture rtl of M68K_WRAP is
 		oHALTEDn : OUT STD_LOGIC;
 		E  		: OUT STD_LOGIC;
 		VMAn  	: OUT STD_LOGIC;
-		BGn  		: OUT STD_LOGIC
+		BGn  		: OUT STD_LOGIC;
+		addrOe_o : OUT STD_LOGIC;
+		dataOe_o : OUT STD_LOGIC;
+		busStarting_o : OUT STD_LOGIC;
+		ss_addr    : IN  STD_LOGIC_VECTOR(7 DOWNTO 0);
+		ss_wr_data : IN  STD_LOGIC_VECTOR(15 DOWNTO 0);
+		ss_wr_en   : IN  STD_LOGIC;
+		ss_rd_data : OUT STD_LOGIC_VECTOR(15 DOWNTO 0)
 	);
 	END COMPONENT;
 	
@@ -79,18 +103,53 @@ begin
 	pwrUp <= not RST_N;
 	extReset <= not RESET_I_N or not RST_N;
 	
+	--Park at bus idle or reset, excluding a newly starting bus cycle.
+	--Masking phase enables holds the complete fx68k microstate.
+	process( RST_N, CLK )
+	begin
+		if RST_N = '0' then
+			FREEZE_ENG <= '0';
+			LAST_WAS_P <= '0';
+		elsif rising_edge(CLK) then
+			--Decide on pulse-free edges after enPhi2. Every image resumes with
+			--enPhi1, preserving strict phase alternation across save and load.
+			if SS_FREEZE = '0' and PULSE = '0' and LAST_WAS_P = '0' then
+				FREEZE_ENG <= '0';
+			elsif SS_FREEZE = '1' and PULSE = '0' and LAST_WAS_P = '0' and
+			      ((AS_N_INT = '1' and BUS_STARTING = '0') or extReset = '1') then
+				FREEZE_ENG <= '1';
+			end if;
+
+			--Phase of the last pulse on the ungated stream, which keeps alternating
+			--while the gate is engaged.
+			if CLKEN_P = '1' then
+				LAST_WAS_P <= '1';
+			elsif CLKEN_N = '1' then
+				LAST_WAS_P <= '0';
+			end if;
+		end if;
+	end process;
+
+	PULSE <= CLKEN_P or CLKEN_N;
+
+	CLKEN_P_G <= CLKEN_P and not FREEZE_ENG;
+	CLKEN_N_G <= CLKEN_N and not FREEZE_ENG;
+
+	SS_FROZEN <= FREEZE_ENG;
+	AS_N <= AS_N_INT;
+
 	P68K :  fx68k
 	port map(
 		clk   		=> CLK,
 		pwrUp      	=> pwrUp,
 		extReset    => extReset,
-		enPhi1   	=> CLKEN_P,
-		enPhi2  	 	=> CLKEN_N,
+		enPhi1   	=> CLKEN_P_G,
+		enPhi2  	 	=> CLKEN_N_G,
 		
 		eab   		=> A,
 		iEdb   		=> DI,
 		oEdb   		=> DO,
-		ASn   		=> AS_N,
+		ASn   		=> AS_N_INT,
 		eRWn   		=> RNW,
 		UDSn   		=> UDS_N,
 		LDSn   		=> LDS_N,
@@ -110,7 +169,14 @@ begin
 		BGACKn   	=> BGACK_N,
 		BGn   		=> BG_N,
 		oRESETn   	=> RESET_O_N,
-		oHALTEDn   	=> HALT_O_N
+		oHALTEDn   	=> HALT_O_N,
+		addrOe_o    => open,
+		dataOe_o    => open,
+		busStarting_o => BUS_STARTING,
+		ss_addr     => SS_ADDR,
+		ss_wr_data  => SS_WR_DATA,
+		ss_wr_en    => SS_WR_EN,
+		ss_rd_data  => SS_RD_DATA
 	);
 	
 end rtl;

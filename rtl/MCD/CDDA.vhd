@@ -20,7 +20,16 @@ entity CD_DAC is
 		WR_READY 		: out std_logic;
 
 		SL				: out signed(15 downto 0);
-		SR				: out signed(15 downto 0)
+		SR				: out signed(15 downto 0);
+
+		--Savestate region CDDA_REGS. ATT_CUR is the attenuation ramp, which moves one
+		--step per sample toward ATT. Both are saved so a fade continues after a load.
+		--The FIFO is not saved. It refills from the stream.
+		SS_ADDR		: in std_logic_vector(5 downto 0) := (others => '0');
+		SS_WR_DATA	: in std_logic_vector(31 downto 0) := (others => '0');
+		SS_WR_EN		: in std_logic := '0';
+		SS_FREEZE	: in std_logic := '0';
+		SS_RD_DATA	: out std_logic_vector(31 downto 0)
 	);
 end CD_DAC;
 
@@ -57,7 +66,14 @@ architecture rtl of CD_DAC is
 
 begin
 
-	EN <= ENABLE;
+	EN <= ENABLE and not SS_FREEZE;
+
+	SS_RD_DATA <=
+		"00000" & std_logic_vector(ATT_CUR) & std_logic_vector(ATT) &
+		RD_REQ & CD_WR_OLD & WR_REQ & LR                  when SS_ADDR = "000000" else
+		FIFO_D                                            when SS_ADDR = "000001" else
+		std_logic_vector(OUTR) & std_logic_vector(OUTL)   when SS_ADDR = "000010" else
+		(others => '0');
 	
 	process( RST_N, CLK )
 	begin
@@ -81,6 +97,18 @@ begin
 						end if;
 					end if;
 				end if;
+			end if;
+
+			if SS_WR_EN = '1' then
+				case SS_ADDR is
+					when "000000" =>
+						LR        <= SS_WR_DATA(0);
+						WR_REQ    <= SS_WR_DATA(1);
+						CD_WR_OLD <= SS_WR_DATA(2);
+					when "000001" =>
+						FIFO_D <= SS_WR_DATA;
+					when others => null;
+				end case;
 			end if;
 		end if;
 	end process;
@@ -121,6 +149,10 @@ begin
 					ATT <= unsigned(FD_DI);
 				end if;
 			end if;
+
+			if SS_WR_EN = '1' and SS_ADDR = "000000" then
+				ATT <= unsigned(SS_WR_DATA(14 downto 4));
+			end if;
 		end if;
 	end process;
 	
@@ -146,6 +178,18 @@ begin
 				elsif ATT_CUR(10 downto 0) < ATT then
 					ATT_CUR <= "0" & (ATT_CUR(10 downto 0) + 1);
 				end if;
+			end if;
+
+			if SS_WR_EN = '1' then
+				case SS_ADDR is
+					when "000000" =>
+						RD_REQ  <= SS_WR_DATA(3);
+						ATT_CUR <= unsigned(SS_WR_DATA(26 downto 15));
+					when "000010" =>
+						OUTL <= signed(SS_WR_DATA(15 downto 0));
+						OUTR <= signed(SS_WR_DATA(31 downto 16));
+					when others => null;
+				end case;
 			end if;
 		end if;
 	end process;

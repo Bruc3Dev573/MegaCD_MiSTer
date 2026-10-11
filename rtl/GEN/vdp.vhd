@@ -114,7 +114,26 @@ entity vdp is
 		BORDER_EN   : in  std_logic := '0';  -- Enable border
 		CRAM_DOTS : in std_logic := '0'; -- Enable CRAM dots
 		OBJ_LIMIT_HIGH_EN : in std_logic := '0'; -- Enable more sprites and pixels per line
-		TRANSP_DETECT : out std_logic
+		TRANSP_DETECT : out std_logic;
+
+		--Savestate ports borrowed at VBlank: CRAM, VSRAM, object cache, registers.
+		--Per-line buffers are re-derived and are not stored.
+		SS_ACTIVE   : in  std_logic := '0';
+		SS_SEL      : in  std_logic_vector(1 downto 0) := "00";
+		SS_ADDR     : in  std_logic_vector(7 downto 0) := (others => '0');
+		SS_WR_DATA  : in  std_logic_vector(31 downto 0) := (others => '0');
+		SS_WR_EN    : in  std_logic := '0';
+		SS_RD_DATA  : out std_logic_vector(31 downto 0);
+
+		--Latch pending interrupts, HINT countdown and H/V position when CPUs park.
+		--Restore those latches on load, then apply them at the matching live phase.
+		--Do not jump the live raster mid-frame.
+		SS_PARK     : in  std_logic := '0';
+		SS_RESUME   : in  std_logic := '0';
+		SS_PHASE_OK : out std_logic;
+
+		--Capture waits for an empty FIFO and idle data/DMA controllers.
+		SS_QUIET    : out std_logic
 	);
 end vdp;
 
@@ -693,6 +712,28 @@ signal FF_B			: std_logic_vector(3 downto 0);
 signal FF_VS		: std_logic;
 signal FF_HS		: std_logic;
 
+----------------------------------------------------------------
+-- Savestate
+----------------------------------------------------------------
+signal SS_CRAM_SEL      : std_logic;
+signal SS_VSRAM_SEL     : std_logic;
+signal SS_OBJC_SEL      : std_logic;
+signal CRAM_ADDR_B_M    : std_logic_vector(5 downto 0);
+signal CRAM_D_B_M       : std_logic_vector(8 downto 0);
+signal VSRAM0_ADDR_B_M  : std_logic_vector(4 downto 0);
+signal VSRAM1_ADDR_B_M  : std_logic_vector(4 downto 0);
+signal VSRAM_D_B_M      : std_logic_vector(10 downto 0);
+signal OBJ_CACHE_ADDR_WR_M : std_logic_vector(6 downto 0);
+signal OBJ_CACHE_D_M    : std_logic_vector(31 downto 0);
+signal OBJ_CACHE_WE_M   : std_logic;
+signal OBJ_CACHE_BE_M   : std_logic_vector(3 downto 0);
+signal SS_VDPREG_RD     : std_logic_vector(31 downto 0);
+signal SS_W10_LIVE      : std_logic_vector(31 downto 0);
+signal SS_W11_LIVE      : std_logic_vector(31 downto 0);
+signal PARK_W10         : std_logic_vector(31 downto 0) := (others => '0');
+signal PARK_W11         : std_logic_vector(31 downto 0) := (others => '0');
+signal SS_PARK_D        : std_logic := '0';
+
 begin
 
 bgb_ci : entity work.DualPortRAM
@@ -776,13 +817,25 @@ port map(
 	clock       => CLK,
 	rdaddress   => OBJ_CACHE_ADDR_RD,
 	q           => OBJ_CACHE_Q,
-	wraddress   => OBJ_CACHE_ADDR_WR,
-	data        => OBJ_CACHE_D,
-	wren        => OBJ_CACHE_WE(1),
-	byteena_a   => OBJ_CACHE_BE
+	wraddress   => OBJ_CACHE_ADDR_WR_M,
+	data        => OBJ_CACHE_D_M,
+	wren        => OBJ_CACHE_WE_M,
+	byteena_a   => OBJ_CACHE_BE_M
 );
 
-OBJ_CACHE_ADDR_RD <= OBJ_CACHE_ADDR_RD_SP1 when SP1C /= SP1C_DONE else OBJ_CACHE_ADDR_RD_SP2;
+-- Restore writes the full 32-bit entry, so every byte enable is on. The normal
+-- path uses them to write one half of a VRAM word at a time.
+OBJ_CACHE_ADDR_WR_M <= SS_ADDR(6 downto 0) when SS_OBJC_SEL = '1' else OBJ_CACHE_ADDR_WR;
+OBJ_CACHE_D_M       <= SS_WR_DATA          when SS_OBJC_SEL = '1' else OBJ_CACHE_D;
+OBJ_CACHE_WE_M      <= SS_WR_EN            when SS_OBJC_SEL = '1' else OBJ_CACHE_WE(1);
+OBJ_CACHE_BE_M      <= "1111"              when SS_OBJC_SEL = '1' else OBJ_CACHE_BE;
+
+-- The sprite attribute cache read port is shared by the two sprite phases. Both
+-- are idle while frozen, so the stream takes it. The cache is saved and restored
+-- like any other memory. Nothing else rebuilds it, because it is written only by
+-- VRAM writes into the SAT region.
+OBJ_CACHE_ADDR_RD <= SS_ADDR(6 downto 0)   when SS_OBJC_SEL = '1' else
+                     OBJ_CACHE_ADDR_RD_SP1 when SP1C /= SP1C_DONE else OBJ_CACHE_ADDR_RD_SP2;
 
 obj_visinfo : entity work.DualPortRAM
 generic map (
@@ -818,6 +871,15 @@ port map(
 	q_b			=> open
  );
 
+-- Savestate selects. Port B of CRAM and VSRAM is a read-only render port. The
+-- stream borrows it and enables its write for restore.
+SS_CRAM_SEL  <= '1' when SS_ACTIVE = '1' and SS_SEL = "00" else '0';
+SS_VSRAM_SEL <= '1' when SS_ACTIVE = '1' and SS_SEL = "01" else '0';
+SS_OBJC_SEL  <= '1' when SS_ACTIVE = '1' and SS_SEL = "10" else '0';
+
+CRAM_ADDR_B_M <= SS_ADDR(5 downto 0) when SS_CRAM_SEL = '1' else CRAM_ADDR_B;
+CRAM_D_B_M    <= SS_WR_DATA(8 downto 0);
+
 cram : entity work.DualPortRAM
 generic map (
 	addrbits => 6,
@@ -825,17 +887,23 @@ generic map (
 )
 port map(
 	address_a	=> CRAM_ADDR_A,
-	address_b	=> CRAM_ADDR_B,
+	address_b	=> CRAM_ADDR_B_M,
 	clock		=> CLK,
 	data_a		=> CRAM_D_A,
-	data_b		=> (others => '0'),
+	data_b		=> CRAM_D_B_M,
 	wren_a		=> CRAM_WE_A,
 	wren_b		=> CRAM_WE_B,
 	q_a			=> CRAM_Q_A,
 	q_b			=> CRAM_Q_B
 );
-CRAM_WE_B <= '0';
+CRAM_WE_B <= SS_WR_EN when SS_CRAM_SEL = '1' else '0';
 CRAM_DATA <= CRAM_D_A when CRAM_WE_A = '1' and CRAM_DOTS = '1' else CRAM_Q_B;
+
+-- VSRAM is two 32x11 halves and SS_ADDR(5) picks the half, so the region covers
+-- all 64 words of physical memory, not only the 20 entries the VDP uses.
+VSRAM0_ADDR_B_M <= SS_ADDR(4 downto 0) when SS_VSRAM_SEL = '1' else VSRAM0_ADDR_B;
+VSRAM1_ADDR_B_M <= SS_ADDR(4 downto 0) when SS_VSRAM_SEL = '1' else VSRAM1_ADDR_B;
+VSRAM_D_B_M     <= SS_WR_DATA(10 downto 0);
 
 vsram0 : entity work.DualPortRAM
 generic map (
@@ -844,16 +912,16 @@ generic map (
 )
 port map(
 	address_a   => VSRAM0_ADDR_A,
-	address_b   => VSRAM0_ADDR_B,
+	address_b   => VSRAM0_ADDR_B_M,
 	clock       => CLK,
 	data_a      => VSRAM0_D_A,
-	data_b      => (others => '0'),
+	data_b      => VSRAM_D_B_M,
 	wren_a      => VSRAM0_WE_A,
 	wren_b      => VSRAM0_WE_B,
 	q_a         => VSRAM0_Q_A,
 	q_b         => VSRAM0_Q_B
 );
-VSRAM0_WE_B <= '0';
+VSRAM0_WE_B <= SS_WR_EN when SS_VSRAM_SEL = '1' and SS_ADDR(5) = '0' else '0';
 
 vsram1 : entity work.DualPortRAM
 generic map (
@@ -862,16 +930,83 @@ generic map (
 )
 port map(
 	address_a   => VSRAM1_ADDR_A,
-	address_b   => VSRAM1_ADDR_B,
+	address_b   => VSRAM1_ADDR_B_M,
 	clock       => CLK,
 	data_a      => VSRAM1_D_A,
-	data_b      => (others => '0'),
+	data_b      => VSRAM_D_B_M,
 	wren_a      => VSRAM1_WE_A,
 	wren_b      => VSRAM1_WE_B,
 	q_a         => VSRAM1_Q_A,
 	q_b         => VSRAM1_Q_B
 );
-VSRAM1_WE_B <= '0';
+VSRAM1_WE_B <= SS_WR_EN when SS_VSRAM_SEL = '1' and SS_ADDR(5) = '1' else '0';
+
+-- Savestate read collector. obj_cache is 32 bits wide, everything else is
+-- narrower and zero-extended.
+SS_QUIET <= '1' when FIFO_EMPTY = '1' and DTC = DTC_IDLE and DMAC = DMA_IDLE and
+                     DMA_VBUS = '0' and DMA_FILL = '0' and DMA_COPY = '0'
+            else '0';
+
+-- w10 holds interrupts and status flags, w11 holds video counters.
+SS_W10_LIVE <= "000000000" & VBL_AREA & IN_VBL & M_HBL & IN_HBL & SCOL & SOVR & INTACK_D &
+	VINT_T80_FF & VINT_TG68_FF & VINT_TG68_PENDING & HINT_FF & HINT_PENDING &
+	HINT_EN & EXINT_FF & EXINT_PENDING & HINT_COUNT;
+SS_W11_LIVE <= "0000" & V30_R & PRE_V_ACTIVE & V_ACTIVE_DISP & V_ACTIVE & FIELD_LATCH &
+	FIELD & HV_PIXDIV & HV_VCNT & HV_HCNT;
+
+-- Park latch, taken on the rising edge of SS_PARK when the CPUs stop and
+-- overwritten by a load. Its bit layout matches w10 and w11.
+process( CLK )
+begin
+	if rising_edge( CLK ) then
+		SS_PARK_D <= SS_PARK;
+		if SS_PARK = '1' and SS_PARK_D = '0' then
+			PARK_W10 <= SS_W10_LIVE;
+			PARK_W11 <= SS_W11_LIVE;
+		end if;
+		if SS_WR_EN = '1' and SS_SEL = "11" and SS_ADDR = x"0A" then
+			PARK_W10 <= SS_WR_DATA;
+		end if;
+		if SS_WR_EN = '1' and SS_SEL = "11" and SS_ADDR = x"0B" then
+			PARK_W11 <= SS_WR_DATA;
+		end if;
+	end if;
+end process;
+
+SS_PHASE_OK <= '1' when HV_VCNT = PARK_W11(17 downto 9) and HV_HCNT = PARK_W11(8 downto 0) else '0';
+
+-- VDP_REGS holds architectural state. Drained pipeline state is re-derived.
+SS_VDPREG_RD <=
+	-- w0..w7: the 32 VDP registers, four per word. The decodes derived from REG,
+	-- such as H40, V30, LSM, SATB and NTAB, follow from them.
+	REG(CONV_INTEGER(SS_ADDR(2 downto 0) & "11")) &
+	REG(CONV_INTEGER(SS_ADDR(2 downto 0) & "10")) &
+	REG(CONV_INTEGER(SS_ADDR(2 downto 0) & "01")) &
+	REG(CONV_INTEGER(SS_ADDR(2 downto 0) & "00"))
+		when SS_ADDR(7 downto 3) = "00000" else
+	-- w8: CPU interface, 17+6+1+2+2+3+1 = 32 bits.
+	FIFO_PARTIAL & FIFO_QUEUE & FIFO_RD_POS & FIFO_WR_POS &
+	PENDING & CODE & ADDR
+		when SS_ADDR = x"08" else
+	-- w9
+	DMA_SOURCE & DMA_LENGTH
+		when SS_ADDR = x"09" else
+	-- w10/w11 as latched when the CPUs parked (see SS_PARK).
+	PARK_W10 when SS_ADDR = x"0A" and SS_PARK = '1' else
+	SS_W10_LIVE when SS_ADDR = x"0A" else
+	PARK_W11 when SS_ADDR = x"0B" and SS_PARK = '1' else
+	SS_W11_LIVE when SS_ADDR = x"0B" else
+	-- w12: window latches and debug register
+	V_DISP_HEIGHT_R & OLD_HL & WRIGT_LATCH & WHP_LATCH & DBG
+		when SS_ADDR = x"0C" else
+	(others => '0');
+
+SS_RD_DATA <= SS_VDPREG_RD                 when SS_SEL = "11" else
+              OBJ_CACHE_Q                  when SS_SEL = "10" else
+              x"00000" & "0" & VSRAM1_Q_B  when SS_SEL = "01" and SS_ADDR(5) = '1' else
+              x"00000" & "0" & VSRAM0_Q_B  when SS_SEL = "01" else
+              x"00000" & "000" & CRAM_Q_B  when SS_SEL = "00" else
+              (others => '0');
 
 ----------------------------------------------------------------
 -- REGISTERS
@@ -2510,6 +2645,16 @@ begin
 			end if;
 
 		end if;
+
+		--Savestate restore of the H-interrupt countdown. HINT_COUNT sets where the
+		--next horizontal interrupt lands, which games use for raster effects.
+		--A load does not write the counters. The VDP keeps its free-running raster
+		--and the CPUs are released when it reaches the parked position (SS_PHASE_OK).
+		--The countdown is restored at that release from the park latch.
+		if SS_RESUME = '1' then
+			HINT_COUNT <= PARK_W10(7 downto 0);
+			HINT_EN    <= PARK_W10(10);
+		end if;
 	end if;
 end process;
 
@@ -3564,6 +3709,38 @@ begin
 				end if;
 			when others => null;
 		end case;
+
+		--Savestate restore for the VDP state this process owns. It is last in the
+		--process so it takes priority. SS_WR_EN only pulses inside the freeze, which
+		--requires FIFO_EMPTY and DTC/DMAC idle, so nothing is being overridden.
+		if SS_WR_EN = '1' and SS_SEL = "11" then
+			if SS_ADDR(7 downto 3) = "00000" then
+				REG(CONV_INTEGER(SS_ADDR(2 downto 0) & "00")) <= SS_WR_DATA(7 downto 0);
+				REG(CONV_INTEGER(SS_ADDR(2 downto 0) & "01")) <= SS_WR_DATA(15 downto 8);
+				REG(CONV_INTEGER(SS_ADDR(2 downto 0) & "10")) <= SS_WR_DATA(23 downto 16);
+				REG(CONV_INTEGER(SS_ADDR(2 downto 0) & "11")) <= SS_WR_DATA(31 downto 24);
+			else
+				case SS_ADDR is
+					when x"08" =>
+						ADDR    <= SS_WR_DATA(16 downto 0);
+						CODE    <= SS_WR_DATA(22 downto 17);
+						PENDING <= SS_WR_DATA(23);
+						--FIFO pointers are restored to the drained state they were
+						--captured in.
+						FIFO_WR_POS  <= SS_WR_DATA(25 downto 24);
+						FIFO_RD_POS  <= SS_WR_DATA(27 downto 26);
+						FIFO_QUEUE   <= SS_WR_DATA(30 downto 28);
+						FIFO_PARTIAL <= SS_WR_DATA(31);
+					when x"09" =>
+						DMA_LENGTH <= SS_WR_DATA(15 downto 0);
+						DMA_SOURCE <= SS_WR_DATA(31 downto 16);
+					--w0A (interrupts) is restored in the processes that own those signals.
+					when x"0C" =>
+						DBG <= SS_WR_DATA(15 downto 0);
+					when others => null;
+				end case;
+			end if;
+		end if;
 	end if;
 
 end process;
@@ -3599,6 +3776,17 @@ begin
 		end if;
 		if VINT_TG68_PENDING_SET = '1' then
 			VINT_TG68_PENDING <= '1';
+		end if;
+
+		--Savestate restore of the pending bits. The three *_FF outputs are not
+		--restored because they follow from PENDING and the IE bits in REG.
+		--Restored at release (SS_RESUME) from the park latch, so interrupts raised
+		--while the CPUs were parked are dropped. INTACK_D is not restored because it
+		--samples the live INTACK and a restored copy could fake an edge.
+		if SS_RESUME = '1' then
+			EXINT_PENDING     <= PARK_W10(8);
+			HINT_PENDING      <= PARK_W10(11);
+			VINT_TG68_PENDING <= PARK_W10(13);
 		end if;
 	end if;	
 end process;

@@ -31,7 +31,22 @@ entity CDC is
 		RAM_A_RD   	: out std_logic_vector(15 downto 0);
 		RAM_DI		: in std_logic_vector(7 downto 0);
 		RAM_DO		: out std_logic_vector(15 downto 0);
-		RAM_WE		: out std_logic
+		RAM_WE		: out std_logic;
+
+		--Savestate region CDC_REGS. TS, the host transfer FSM, is not saved.
+		--SS_QUIET holds off the freeze until TS is idle.
+		SS_ADDR		: in std_logic_vector(5 downto 0) := (others => '0');
+		SS_WR_DATA	: in std_logic_vector(31 downto 0) := (others => '0');
+		SS_WR_EN		: in std_logic := '0';
+		SS_RD_DATA	: out std_logic_vector(31 downto 0);
+		SS_QUIET		: out std_logic;
+		SS_FREEZE	: in std_logic := '0';
+		--Stream position as the BCD MSF header of the last decoded sector.
+		--CDD status lags delivery by one or two sectors, so the drive is restored
+		--from HEAD to avoid sending sectors the CDC already consumed.
+		SS_HEAD_MSF	: out std_logic_vector(23 downto 0);
+		--Transfer state in bits 15..13 controls the sub-CPU park gate.
+		SS_DBG		: out std_logic_vector(15 downto 0)
 	);
 end CDC;
 
@@ -164,7 +179,38 @@ architecture rtl of CDC is
 	
 begin
 
-	EN <= ENABLE and (CLKEN_N or CLKEN_P);
+	--Frozen with the rest of the machine. The restore writes below are outside
+	--the EN gates because they happen while the machine is frozen.
+	EN <= ENABLE and (CLKEN_N or CLKEN_P) and not SS_FREEZE;
+
+	----------------------------------------------------------------
+	-- Savestate
+	----------------------------------------------------------------
+	--The decoder and pending DECI are captured, so no sector boundary is needed.
+	--TS_SEND_WAIT is quiet: its staged word and busy/valid bits round-trip.
+	--Moving host-transfer states are excluded.
+	SS_QUIET <= '1' when TS = TS_IDLE or TS = TS_SEND_WAIT else '0';
+
+	SS_HEAD_MSF <= HEAD0 & HEAD1 & HEAD2;
+
+	--Keep this packed report stable. The top-level park gate uses TS.
+	SS_DBG <= std_logic_vector(to_unsigned(TransferState_t'pos(TS), 3)) &
+	          "0" & IFSTAT(DECI) & std_logic_vector(WORD_CNT);
+
+	SS_RD_DATA <=
+		CTRL0 & IFSTAT & IFCTRL & x"0" & AR              when SS_ADDR = "000000" else
+		STAT3 & STAT2 & STAT0 & CTRL1                    when SS_ADDR = "000001" else
+		DAC & DBC                                        when SS_ADDR = "000010" else
+		WA & PT                                          when SS_ADDR = "000011" else
+		HEAD3 & HEAD2 & HEAD1 & HEAD0                    when SS_ADDR = "000100" else
+		DEC_HEAD23 & DEC_HEAD01                          when SS_ADDR = "000101" else
+		"0" & CD_WR_OLD & DT_EN & DEC_WR & DEC_WR_EN &
+		std_logic_vector(WORD_CNT) & DEC_DAT             when SS_ADDR = "000110" else
+		"00000" & OLD_WRRQ & OLD_RD_N & OLD_WR_N &
+		std_logic_vector(DEC_POS) & std_logic_vector(RAM_POS)
+		                                                 when SS_ADDR = "000111" else
+		"00000000000000000000000" & FIFO_DATA0           when SS_ADDR = "001000" else
+		(others => '0');
 	
 	process( RESET_N, CLK )
 	begin
@@ -175,6 +221,12 @@ begin
 			if EN = '1' then
 				OLD_WR_N <= WR_N;
 				OLD_RD_N <= RD_N;
+			end if;
+
+			--Savestate restore of the edge-detect latches this process owns.
+			if SS_WR_EN = '1' and SS_ADDR = "000111" then
+				OLD_WR_N <= SS_WR_DATA(24);
+				OLD_RD_N <= SS_WR_DATA(25);
 			end if;
 		end if;
 	end process;
@@ -277,6 +329,24 @@ begin
 						AR <= std_logic_vector( unsigned(AR) + 1 );
 					end if;
 				end if;
+			end if;
+
+			--Savestate restore of only the bits this process drives. IFSTAT and STATn
+			--are driven bit by bit from three processes, so a whole-byte restore here
+			--would add a second driver.
+			if SS_WR_EN = '1' then
+				case SS_ADDR is
+					when "000000" =>
+						AR     <= SS_WR_DATA(3 downto 0);
+						IFCTRL <= SS_WR_DATA(15 downto 8);
+						CTRL0  <= SS_WR_DATA(31 downto 24);
+					when "000001" =>
+						CTRL1        <= SS_WR_DATA(7 downto 0);
+						STAT0(CRCOK) <= SS_WR_DATA(8 + CRCOK);
+						STAT2(MODE)  <= SS_WR_DATA(16 + MODE);
+						STAT2(NOCOR) <= SS_WR_DATA(16 + NOCOR);
+					when others => null;
+				end case;
 			end if;
 		end if;
 	end process;
@@ -396,6 +466,35 @@ begin
 					RAM_POS <= (others => '0');
 				end if;
 			end if;
+
+			--Savestate restore for the sector decoder state.
+			if SS_WR_EN = '1' then
+				case SS_ADDR is
+					when "000000" => IFSTAT(DECI) <= SS_WR_DATA(16 + DECI);
+					when "000001" => STAT3(VALST) <= SS_WR_DATA(24 + VALST);
+					when "000011" =>
+						PT <= SS_WR_DATA(15 downto 0);
+						WA <= SS_WR_DATA(31 downto 16);
+					when "000100" =>
+						HEAD0 <= SS_WR_DATA(7 downto 0);
+						HEAD1 <= SS_WR_DATA(15 downto 8);
+						HEAD2 <= SS_WR_DATA(23 downto 16);
+						HEAD3 <= SS_WR_DATA(31 downto 24);
+					when "000101" =>
+						DEC_HEAD01 <= SS_WR_DATA(15 downto 0);
+						DEC_HEAD23 <= SS_WR_DATA(31 downto 16);
+					when "000110" =>
+						DEC_DAT    <= SS_WR_DATA(15 downto 0);
+						WORD_CNT   <= unsigned(SS_WR_DATA(26 downto 16));
+						DEC_WR_EN  <= SS_WR_DATA(27);
+						DEC_WR     <= SS_WR_DATA(28);
+						CD_WR_OLD  <= SS_WR_DATA(30);
+					when "000111" =>
+						RAM_POS <= unsigned(SS_WR_DATA(11 downto 0));
+						DEC_POS <= unsigned(SS_WR_DATA(23 downto 12));
+					when others => null;
+				end case;
+			end if;
 		end if;
 	end process;
 	
@@ -415,6 +514,10 @@ begin
 				if DT_EN = '1' then
 --					OLD_HRD_N <= HRD_N;
 				end if;
+			end if;
+
+			if SS_WR_EN = '1' and SS_ADDR = "000110" then
+				DT_EN <= SS_WR_DATA(29);
 			end if;
 		end if;
 	end process;
@@ -581,6 +684,33 @@ begin
 --						WAIT_N <= '1';
 --					end if;
 				end if;
+			end if;
+
+			--Restore host-transfer signals from IFSTAT, then re-arm from DAC and DBC.
+			--DTEN_N, WAIT_N and TS are not kept from before the load.
+			if SS_WR_EN = '1' then
+				case SS_ADDR is
+					when "000000" =>
+						IFSTAT(DTEN)  <= SS_WR_DATA(16 + DTEN);
+						IFSTAT(DTBSY) <= SS_WR_DATA(16 + DTBSY);
+						IFSTAT(DTEI)  <= SS_WR_DATA(16 + DTEI);
+						DTEN_N <= SS_WR_DATA(16 + DTEN);
+						WAIT_N <= '0';
+						TS <= TS_IDLE;
+					when "000010" =>
+						DBC <= SS_WR_DATA(15 downto 0);
+						DAC <= SS_WR_DATA(31 downto 16);
+					when "001000" =>
+						FIFO_DATA0 <= SS_WR_DATA(8 downto 0);
+						--A valid FIFO byte is staged only while DTBSY is low.
+						--TS_SEND leaves valid set after the last byte. Restoring that
+						--stale bit into SEND_WAIT would block the next DTTRG.
+						if SS_WR_DATA(8) = '1' and IFSTAT(DTBSY) = '0' then
+							TS <= TS_SEND_WAIT;
+							WAIT_N <= '1';
+						end if;
+					when others => null;
+				end case;
 			end if;
 		end if;
 	end process;

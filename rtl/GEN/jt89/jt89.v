@@ -37,8 +37,20 @@ module jt89(
     input          wr_n,
     input    [7:0] din,
     output  signed [10:0] sound,
-    output         ready
+    output         ready,
+
+    // Savestate, region PSG_REGS. The PSG is write only, so these taps are the
+    // only way to capture its state. All state is in flops.
+    input    [2:0] ss_addr,
+    input   [31:0] ss_wr_data,
+    input          ss_wr_en,
+    output  [31:0] ss_rd_data
 );
+
+assign ss_rd_data =
+    (ss_addr == 3'd0) ? {2'd0, tone2, tone1, tone0} :
+    (ss_addr == 3'd1) ? {12'd0, ctrl3, regn, vol3, vol2, vol1, vol0} :
+                        32'd0;
 
 parameter interpol16=0;
 
@@ -85,6 +97,8 @@ always @(posedge clk )
         clk_div <= clk_div + 1'b1;
 
 reg clr_noise, last_wr;
+
+// Savestate restore is at the end of the register process below.
 wire [2:0] reg_sel = din[7] ? din[6:4] : regn;
 
 always @(posedge clk)
@@ -111,6 +125,24 @@ always @(posedge clk)
             endcase
         end
         else clr_noise <= 1'b0;
+
+        // Savestate restore. It is last in the block so it wins. ss_wr_en only
+        // pulses while the core is frozen.
+        if( ss_wr_en ) begin
+            if( ss_addr == 3'd0 ) begin
+                tone0 <= ss_wr_data[9:0];
+                tone1 <= ss_wr_data[19:10];
+                tone2 <= ss_wr_data[29:20];
+            end
+            if( ss_addr == 3'd1 ) begin
+                vol0  <= ss_wr_data[3:0];
+                vol1  <= ss_wr_data[7:4];
+                vol2  <= ss_wr_data[11:8];
+                vol3  <= ss_wr_data[15:12];
+                regn  <= ss_wr_data[18:16];
+                ctrl3 <= ss_wr_data[21:19];
+            end
+        end
     end
 
 jt89_tone u_tone0(

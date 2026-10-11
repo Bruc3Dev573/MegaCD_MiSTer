@@ -28,7 +28,13 @@ module hps_ext
 	output reg [48:0] cd_out,
 
 	input             cdda_ready,
-	input             cd_data_ready
+	input             cd_data_ready,
+
+	// Savestate load handoff. Main emulates the CD drive, so after a load the
+	// core passes the saved drive status to Main, which restores its drive model.
+	input             ss_load_pending,
+	input      [39:0] ss_load_cdd_stat,
+	output reg        ss_load_taken = 0
 );
 
 assign EXT_BUS[15:0] = io_dout;
@@ -88,8 +94,21 @@ always@(posedge clk_sys) begin
 								endcase
 							end else if (get_cmd == 1) begin // Request ready for data
 								if (byte_cnt[2:0] == 2) begin
-									io_dout <= {15'd0, send_data_type ? cd_data_ready : cdda_ready};
+									// Bit 1 is set when a savestate load finished and the
+									// saved drive status is ready for get_cmd 2.
+									io_dout <= {14'd0, ss_load_pending,
+									            send_data_type ? cd_data_ready : cdda_ready};
 								end
+							end else if (get_cmd == 2) begin // Saved CDD status after a load
+								case(byte_cnt[2:0])
+									2: io_dout <= ss_load_cdd_stat[15:0];
+									3: io_dout <= ss_load_cdd_stat[31:16];
+									4: begin
+										io_dout <= {8'd0, ss_load_cdd_stat[39:32]};
+										// Toggle acknowledge, clears pending.
+										ss_load_taken <= ~ss_load_taken;
+									end
+								endcase
 							end
 						end
 					end

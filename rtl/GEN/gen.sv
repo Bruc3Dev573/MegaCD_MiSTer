@@ -135,6 +135,56 @@ module gen
 	input [128:0] GG_CODE,
 	output        GG_AVAILABLE,
 
+	// Savestate. SS_FREEZE asks the main 68000 to park at bus idle.
+	// SS_M68K_FROZEN reports that the enable gate is engaged.
+	input         SS_FREEZE,
+	output        SS_M68K_FROZEN,
+	input   [7:0] SS_M68K_ADDR,
+	input  [15:0] SS_M68K_WR_DATA,
+	input         SS_M68K_WR_EN,
+	output [15:0] SS_M68K_RD_DATA,
+
+	// Genesis-side memory stream. SS_ACTIVE hands the RAM ports over.
+	// SS_MEM_SEL: 0 = VRAM (16-bit words), 1 = Z80 RAM (bytes).
+	input         SS_ACTIVE,
+	input         SS_MEM_SEL,
+	input  [14:0] SS_MEM_ADDR,
+	input  [15:0] SS_MEM_WR_DATA,
+	input         SS_MEM_WR_EN,
+	output [15:0] SS_MEM_RD_DATA,
+
+	// VDP-internal stream: CRAM, VSRAM, obj_cache, VDP registers.
+	// 32 bits wide because obj_cache entries are 32-bit.
+	input   [1:0] SS_VDP_SEL,
+	input   [7:0] SS_VDP_ADDR,
+	input  [31:0] SS_VDP_WR_DATA,
+	input         SS_VDP_WR_EN,
+	output [31:0] SS_VDP_RD_DATA,
+	output        SS_VDP_QUIET,
+	input         SS_VDP_PARK,     // freeze granted, VDP latches its raster phase
+	input         SS_VDP_RESUME,   // 1 clock at release, latched pending bits return
+	output        SS_VDP_PHASE_OK, // live raster is back at the parked position
+
+	// FM register shadow (region FM_SHADOW), one YM2612 register per word.
+	input   [8:0] SS_FM_ADDR,
+	input   [7:0] SS_FM_WR_DATA,
+	input         SS_FM_WR_EN,
+	output  [7:0] SS_FM_RD_DATA,
+	input         SS_FM_REPLAY,   // 1-cycle pulse after a load completes
+	output        SS_FM_REPLAYING,
+
+	// Z80 architectural state (region Z80_REGS), 212 bits over 7 words.
+	output        SS_Z80_FROZEN,
+	output [211:0] SS_Z80_REG,
+	input  [211:0] SS_Z80_DIR,
+	input         SS_Z80_DIRSET,
+
+	// PSG registers (region PSG_REGS)
+	input   [2:0] SS_PSG_ADDR,
+	input  [31:0] SS_PSG_WR_DATA,
+	input         SS_PSG_WR_EN,
+	output [31:0] SS_PSG_RD_DATA,
+
 	output [23:0] DBG_M68K_A,
 	output [23:0] DBG_MBUS_A
 );
@@ -232,17 +282,47 @@ always @(posedge MCLK) begin
 end
 
 wire M68K_INTACK = &M68K_FC;
+wire M68K_BUS_STARTING;
 
 assign M68K_BR_N = VBUS_BR_N & Z80_BR_N;
 assign M68K_BGACK_N = VBUS_BGACK_N & Z80_BGACK_N;
+
+// Park at bus idle or reset, never at a newly starting cycle. Engage and release
+// on pulse-free edges after enPhi2, so every image resumes with enPhi1 and the
+// phase enables keep alternating.
+wire ss_m68k_pulse = M68K_CLKENp | M68K_CLKENn;
+reg ss_m68k_freeze_eng;
+reg ss_m68k_last_p;
+always @(posedge MCLK) begin
+	if(!SS_FREEZE && !ss_m68k_pulse && !ss_m68k_last_p)      ss_m68k_freeze_eng <= 0;
+	else if(SS_FREEZE && !ss_m68k_pulse && !ss_m68k_last_p &&
+	        ((M68K_AS_N && !M68K_BUS_STARTING) || reset))    ss_m68k_freeze_eng <= 1;
+
+	// Phase of the last pulse on the ungated stream, which keeps alternating while
+	// the gate is engaged.
+	if(M68K_CLKENp)      ss_m68k_last_p <= 1;
+	else if(M68K_CLKENn) ss_m68k_last_p <= 0;
+end
+assign SS_M68K_FROZEN = ss_m68k_freeze_eng;
+
+wire M68K_CLKENp_G = M68K_CLKENp & ~ss_m68k_freeze_eng;
+wire M68K_CLKENn_G = M68K_CLKENn & ~ss_m68k_freeze_eng;
 
 fx68k M68K
 (
 	.clk(MCLK),
 	.extReset(reset),
 	.pwrUp(reset),
-	.enPhi1(M68K_CLKENp),
-	.enPhi2(M68K_CLKENn),
+	.enPhi1(M68K_CLKENp_G),
+	.enPhi2(M68K_CLKENn_G),
+
+	.addrOe_o(),
+	.dataOe_o(),
+	.busStarting_o(M68K_BUS_STARTING),
+	.ss_addr(SS_M68K_ADDR),
+	.ss_wr_data(SS_M68K_WR_DATA),
+	.ss_wr_en(SS_M68K_WR_EN),
+	.ss_rd_data(SS_M68K_RD_DATA),
 
 	.eRWn(M68K_RNW),
 	.ASn(M68K_AS_N),
@@ -283,6 +363,7 @@ CODES #(.ADDR_WIDTH(24), .DATA_WIDTH(16), .BIG_ENDIAN(1)) codes
 );
 
 
+
 //--------------------------------------------------------------
 // VDP + PSG
 //--------------------------------------------------------------
@@ -314,12 +395,29 @@ wire        vram32_req;
 wire [15:1] vram32_a;
 wire [31:0] vram32_q;
 
+// VRAM savestate muxes. VRAM is four 16Kx8 blocks. {u,l} give a 16-bit word and
+// vram_a[1] picks the even or odd bank, so a 15-bit VRAM word address maps to
+// bank = SS_MEM_ADDR[0], row = SS_MEM_ADDR[14:1]. The stream borrows port A from
+// the VDP, which is parked at VBlank with its render FSMs idle.
+// Port B is the 32-bit render read and the LOADING clear and is not muxed.
+wire        ss_vram_sel = SS_ACTIVE & (SS_MEM_SEL == 1'b0);
+wire [13:0] ss_vram_row = SS_MEM_ADDR[14:1];
+wire        ss_vram_bnk = SS_MEM_ADDR[0];
+wire [13:0] vram_addr_a_m = ss_vram_sel ? ss_vram_row : vram_a[15:2];
+wire  [7:0] vram_dl_m     = ss_vram_sel ? SS_MEM_WR_DATA[7:0]  : vram_d[7:0];
+wire  [7:0] vram_du_m     = ss_vram_sel ? SS_MEM_WR_DATA[15:8] : vram_d[15:8];
+wire        ss_vram_we0   = ss_vram_sel & SS_MEM_WR_EN & ~ss_vram_bnk;
+wire        ss_vram_we1   = ss_vram_sel & SS_MEM_WR_EN &  ss_vram_bnk;
+
+assign SS_MEM_RD_DATA = (SS_MEM_SEL == 1'b1) ? {8'd0, ZRAM_DO} :
+                        ss_vram_bnk          ? vram_q2 : vram_q1;
+
 dpram #(14) vram_l1
 (
 	.clock(MCLK),
-	.address_a(vram_a[15:2]),
-	.data_a(vram_d[7:0]),
-	.wren_a(vram_we_l & (vram_ack ^ vram_req) & ~vram_a[1]),
+	.address_a(vram_addr_a_m),
+	.data_a(vram_dl_m),
+	.wren_a(ss_vram_sel ? ss_vram_we0 : (vram_we_l & (vram_ack ^ vram_req) & ~vram_a[1])),
 	.q_a(vram_q1[7:0]),
 
 	.address_b(LOADING ? ram_rst_a[14:1] : vram32_a[15:2]),
@@ -330,9 +428,9 @@ dpram #(14) vram_l1
 dpram #(14) vram_u1
 (
 	.clock(MCLK),
-	.address_a(vram_a[15:2]),
-	.data_a(vram_d[15:8]),
-	.wren_a(vram_we_u & (vram_ack ^ vram_req) & ~vram_a[1]),
+	.address_a(vram_addr_a_m),
+	.data_a(vram_du_m),
+	.wren_a(ss_vram_sel ? ss_vram_we0 : (vram_we_u & (vram_ack ^ vram_req) & ~vram_a[1])),
 	.q_a(vram_q1[15:8]),
 
 	.address_b(LOADING ? ram_rst_a[14:1] : vram32_a[15:2]),
@@ -343,9 +441,9 @@ dpram #(14) vram_u1
 dpram #(14) vram_l2
 (
 	.clock(MCLK),
-	.address_a(vram_a[15:2]),
-	.data_a(vram_d[7:0]),
-	.wren_a(vram_we_l & (vram_ack ^ vram_req) & vram_a[1]),
+	.address_a(vram_addr_a_m),
+	.data_a(vram_dl_m),
+	.wren_a(ss_vram_sel ? ss_vram_we1 : (vram_we_l & (vram_ack ^ vram_req) & vram_a[1])),
 	.q_a(vram_q2[7:0]),
 
 	.address_b(LOADING ? ram_rst_a[14:1] : vram32_a[15:2]),
@@ -356,9 +454,9 @@ dpram #(14) vram_l2
 dpram #(14) vram_u2
 (
 	.clock(MCLK),
-	.address_a(vram_a[15:2]),
-	.data_a(vram_d[15:8]),
-	.wren_a(vram_we_u & (vram_ack ^ vram_req) & vram_a[1]),
+	.address_a(vram_addr_a_m),
+	.data_a(vram_du_m),
+	.wren_a(ss_vram_sel ? ss_vram_we1 : (vram_we_u & (vram_ack ^ vram_req) & vram_a[1])),
 	.q_a(vram_q2[15:8]),
 
 	.address_b(LOADING ? ram_rst_a[14:1] : vram32_a[15:2]),
@@ -446,13 +544,29 @@ vdp vdp
 	.HBL(HBL),
 	.VBL(VBL),
 
-	.TRANSP_DETECT(TRANSP_DETECT)
+	.TRANSP_DETECT(TRANSP_DETECT),
+
+	.SS_ACTIVE(SS_ACTIVE),
+	.SS_SEL(SS_VDP_SEL),
+	.SS_ADDR(SS_VDP_ADDR),
+	.SS_WR_DATA(SS_VDP_WR_DATA),
+	.SS_WR_EN(SS_VDP_WR_EN),
+	.SS_RD_DATA(SS_VDP_RD_DATA),
+	.SS_QUIET(SS_VDP_QUIET),
+	.SS_PARK(SS_VDP_PARK),
+	.SS_RESUME(SS_VDP_RESUME),
+	.SS_PHASE_OK(SS_VDP_PHASE_OK)
 );
 
 // PSG 0x10-0x17 in VDP space
 wire signed [10:0] PSG_SND;
 jt89 psg
 (
+	.ss_addr(SS_PSG_ADDR),
+	.ss_wr_data(SS_PSG_WR_DATA),
+	.ss_wr_en(SS_PSG_WR_EN),
+	.ss_rd_data(SS_PSG_RD_DATA),
+
 	.rst(reset),
 	.clk(MCLK),
 	.clk_en(Z80_CLKENn),
@@ -953,12 +1067,29 @@ wire        Z80_IO = ~Z80_MREQ_N & (~Z80_RD_N | ~Z80_WR_N);
 wire        Z80_IO_PRE = ~Z80_MREQ_N & Z80_RFSH_N;
 
 //T80s #(.T2Write(1)) Z80
+// Capture Z80 architectural state at opcode fetch, reset, or bus release.
+// T80 provides the 212-bit REG/DIRSet/DIR state interface.
+reg ss_z80_freeze_eng;
+always @(posedge MCLK) begin
+	if(!SS_FREEZE)                                        ss_z80_freeze_eng <= 0;
+	else if(!Z80_M1_N || ~Z80_RESET_N || ~Z80_BUSAK_N)    ss_z80_freeze_eng <= 1;
+end
+assign SS_Z80_FROZEN = ss_z80_freeze_eng;
+
+wire Z80_CLKENp_G = Z80_CLKENp & ~ss_z80_freeze_eng;
+wire Z80_CLKENn_G = Z80_CLKENn & ~ss_z80_freeze_eng;
+wire Z80_M1_N;
+
 T80pa Z80
 (
 	.RESET_n(Z80_RESET_N),
 	.CLK(MCLK),
-	.CEN_p(Z80_CLKENp),
-	.CEN_n(Z80_CLKENn),
+	.CEN_p(Z80_CLKENp_G),
+	.CEN_n(Z80_CLKENn_G),
+	.M1_n(Z80_M1_N),
+	.REG(SS_Z80_REG),
+	.DIRSet(SS_Z80_DIRSET),
+	.DIR(SS_Z80_DIR),
 //	.CEN(Z80_CLKENn),
 	.BUSRQ_n(Z80_BUSRQ_N),
 	.BUSAK_n(Z80_BUSAK_N),
@@ -1031,12 +1162,15 @@ wire       Z80_MBUS_SEL = Z80_IO & ~Z80_ZBUS;
 wire ZRAM_SEL = ~ZBUS_A[14];
 
 wire  [7:0] ZRAM_DO;
+// Z80 RAM is a single 8Kx8 with one port in use. The stream takes it while frozen.
+// The Z80 is stopped by the same freeze, so there is no contention.
+wire ss_zram_sel = SS_ACTIVE & (SS_MEM_SEL == 1'b1);
 dpram #(13) ramZ80
 (
 	.clock(MCLK),
-	.address_a(ZBUS_A[12:0]),
-	.data_a(ZBUS_DO),
-	.wren_a(ZBUS_WE & ZRAM_SEL),
+	.address_a(ss_zram_sel ? SS_MEM_ADDR[12:0] : ZBUS_A[12:0]),
+	.data_a(ss_zram_sel ? SS_MEM_WR_DATA[7:0] : ZBUS_DO),
+	.wren_a(ss_zram_sel ? SS_MEM_WR_EN : (ZBUS_WE & ZRAM_SEL)),
 	.q_a(ZRAM_DO)
 );
 
@@ -1151,6 +1285,126 @@ wire signed [15:0] FM_LPF_left;
 wire signed [15:0] SL;
 wire signed [15:0] SR;
 
+//--------------------------------------------------------------
+// FM register shadow for savestates
+//--------------------------------------------------------------
+// Mirror CPU writes because jt12's rotating register file has no readback.
+// YM2612 A0 selects address or data. A1 selects one of two banks.
+reg [7:0] fm_shadow[0:511];
+reg [7:0] fm_addr_lat[0:1];
+reg [7:0] fm_shadow_q;
+
+// The shadow is read either by the savestate stream or by the replay sequencer.
+wire [8:0] fm_sh_rd_addr = fm_rp_run ? fm_rp_idx[8:0] : SS_FM_ADDR;
+
+// Mux CPU/restore writes into one port so Quartus infers a 1W1R memory.
+wire [8:0] fm_wr_addr = SS_FM_WR_EN ? SS_FM_ADDR
+                                    : {ZBUS_A[1], fm_addr_lat[ZBUS_A[1]]};
+wire [7:0] fm_wr_data = SS_FM_WR_EN ? SS_FM_WR_DATA : ZBUS_DO;
+wire       fm_wr_en   = SS_FM_WR_EN | (FM_SEL & ZBUS_WE & ZBUS_A[0]);
+
+always @(posedge MCLK) begin
+	// The register-index latch stays in flops: two bytes, one per bank.
+	if (FM_SEL & ZBUS_WE & ~ZBUS_A[0]) fm_addr_lat[ZBUS_A[1]] <= ZBUS_DO;
+
+	if (fm_wr_en) fm_shadow[fm_wr_addr] <= fm_wr_data;
+	fm_shadow_q <= fm_shadow[fm_sh_rd_addr];
+end
+assign SS_FM_RD_DATA = fm_shadow_q;
+
+//--------------------------------------------------------------
+// FM replay sequencer
+//--------------------------------------------------------------
+// The YM2612 register file is shift registers, not RAM. A write lands only when
+// its target slot comes round, so back to back writes are dropped. The sequencer
+// polls the busy bit in the status byte between writes, as a sound driver does.
+//
+// Replay order:
+//   $28  key on/off last, after every operator's TL/AR/DR/SL/RR is in place.
+//   $27  timer control late, so timers and IRQs do not start mid-sweep.
+//   $24-$26 timer periods, replayed with $27.
+//   $2A $2B  DAC data and enable are skipped. $2A is a sample stream and
+//        $2B moves the output mux.
+//   $21 $2C  test registers are skipped.
+//
+// Envelope phase, phase accumulators and the LFO counter are internal and are not
+// restored. Audio becomes correct within a note or two.
+reg  [9:0] fm_rp_idx;
+reg  [1:0] fm_rp_st;
+reg        fm_rp_run = 0;
+reg        fm_rp_wr;
+reg        fm_rp_phase;   // 0 = write the register index, 1 = write its value
+
+assign SS_FM_REPLAYING = fm_rp_run;
+
+wire [7:0] fm_rp_reg  = fm_rp_idx[7:0];
+wire       fm_rp_bank = fm_rp_idx[8];
+
+// Registers to skip during the main sweep. The tail (idx 512, 513) replays the
+// two that were held back, in order.
+wire fm_rp_skip = (fm_rp_idx < 10'd512) &&
+                  ( (fm_rp_reg < 8'h22) || (fm_rp_reg >= 8'hB7) ||
+                    (~fm_rp_bank & (fm_rp_reg == 8'h24 || fm_rp_reg == 8'h25 ||
+                                    fm_rp_reg == 8'h26 || fm_rp_reg == 8'h27 ||
+                                    fm_rp_reg == 8'h28 || fm_rp_reg == 8'h2A ||
+                                    fm_rp_reg == 8'h2B || fm_rp_reg == 8'h2C)) ||
+                    ( fm_rp_bank & (fm_rp_reg < 8'h30)) );
+
+// idx 512 is $27 (timers), idx 513 is $28 (key on/off). Both bank 0.
+wire [7:0] fm_rp_reg_eff  = (fm_rp_idx == 10'd512) ? 8'h27 :
+                            (fm_rp_idx == 10'd513) ? 8'h28 : fm_rp_reg;
+wire       fm_rp_bank_eff = (fm_rp_idx >= 10'd512) ? 1'b0 : fm_rp_bank;
+
+wire fm_busy = FM_DO[7];
+
+always @(posedge MCLK) begin
+	if (SS_FM_REPLAY) begin
+		fm_rp_idx <= 0;
+		fm_rp_st  <= 0;
+		fm_rp_run <= 1;
+		fm_rp_wr  <= 0;
+	end
+	else if (fm_rp_run) begin
+		case (fm_rp_st)
+			// Pick the next register, or finish.
+			2'd0: begin
+				fm_rp_wr <= 0;
+				if (fm_rp_idx > 10'd513) fm_rp_run <= 0;
+				else if (fm_rp_skip)     fm_rp_idx <= fm_rp_idx + 1'd1;
+				else if (!fm_busy) begin
+					fm_rp_phase <= 0;      // address port
+					fm_rp_wr    <= 1;
+					fm_rp_st    <= 2'd1;
+				end
+			end
+			// Address written. Wait for the chip to take it.
+			2'd1: begin
+				fm_rp_wr <= 0;
+				if (!fm_busy) begin
+					fm_rp_phase <= 1;      // data port
+					fm_rp_wr    <= 1;
+					fm_rp_st    <= 2'd2;
+				end
+			end
+			// Data written. Wait, then step.
+			2'd2: begin
+				fm_rp_wr <= 0;
+				if (!fm_busy) begin
+					fm_rp_idx <= fm_rp_idx + 1'd1;
+					fm_rp_st  <= 2'd0;
+				end
+			end
+			default: fm_rp_st <= 2'd0;
+		endcase
+	end
+end
+
+// Bus mux. While replaying, the Z80 path is disconnected so a driver write cannot
+// land on a half-restored chip.
+wire [1:0] fm_addr_m = fm_rp_run ? {fm_rp_bank_eff, fm_rp_phase} : ZBUS_A[1:0];
+wire [7:0] fm_din_m  = fm_rp_run ? (fm_rp_phase ? fm_shadow_q : fm_rp_reg_eff) : ZBUS_DO;
+wire       fm_wr_n_m = fm_rp_run ? ~fm_rp_wr : ~(FM_SEL & ZBUS_WE);
+
 jt12 fm
 (
 	.rst(~Z80_RESET_N),
@@ -1158,9 +1412,9 @@ jt12 fm
 	.cen(M68K_CLKENp),
 
 	.cs_n(0),
-	.addr(ZBUS_A[1:0]),
-	.wr_n(~(FM_SEL & ZBUS_WE)),
-	.din(ZBUS_DO),
+	.addr(fm_addr_m),
+	.wr_n(fm_wr_n_m),
+	.din(fm_din_m),
 	.dout(FM_DO),
 	.en_hifi_pcm( EN_HIFI_PCM ),
 	.ladder(LADDER),

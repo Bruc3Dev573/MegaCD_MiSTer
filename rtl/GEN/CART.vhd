@@ -31,7 +31,15 @@ entity CART is
 		
 		RAM_CE_N		: out std_logic;
 		RAM_DI		: in std_logic_vector(15 downto 0);
-		RAM_RDY		: in std_logic
+		RAM_RDY		: in std_logic;
+
+		--Savestate, region CART_REGS. CART_RAM_WP is the backup RAM write protect
+		--register. The game sets it and reset drives it to all ones.
+		--The backup RAM contents are not captured. MiSTer saves them to SD as
+		--persistent save data, and a load must not roll them back.
+		SS_WP_RD		: out std_logic_vector(7 downto 0);
+		SS_WP_WR_DATA	: in std_logic_vector(7 downto 0) := (others => '0');
+		SS_WP_WR_EN	: in std_logic := '0'
 	);
 end CART;
 
@@ -106,6 +114,8 @@ begin
 	
 	CART_RAM_SEL <= not ROM_MODE when CE0_N = '0' and (LDS_N = '0' or UDS_N = '0') and ASEL_N = '0' else '0';
 	
+	SS_WP_RD <= CART_RAM_WP;
+
 	process( RST_N, CLK )
 	begin
 		if RST_N = '0' then
@@ -115,6 +125,12 @@ begin
 			CART_RAM_WP <= (others => '1');
 			RAM_CE_N <= '1';
 		elsif rising_edge(CLK) then
+			--Savestate restore. It comes before the state machine so a game write
+			--in the same cycle wins. The core is frozen during a restore.
+			if SS_WP_WR_EN = '1' then
+				CART_RAM_WP <= SS_WP_WR_DATA;
+			end if;
+
 			case RAMS is
 				when MS_IDLE =>
 					if CART_RAM_SEL = '1' and CART_RAM_DTACK_N = '1' then

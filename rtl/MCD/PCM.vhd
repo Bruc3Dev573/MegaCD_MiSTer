@@ -27,7 +27,15 @@ entity PCM is
 		RAM_DI_B		: in std_logic_vector(7 downto 0);
 		
 		SL				: out signed(15 downto 0);
-		SR				: out signed(15 downto 0)
+		SR				: out signed(15 downto 0);
+
+		--Savestate, region PCM_REGS. It includes WRA, the eight 27-bit fixed-point
+		--read pointers, so each voice resumes mid-sample instead of at its loop point.
+		SS_ADDR		: in std_logic_vector(5 downto 0) := (others => '0');
+		SS_WR_DATA	: in std_logic_vector(31 downto 0) := (others => '0');
+		SS_WR_EN		: in std_logic := '0';
+		SS_FREEZE	: in std_logic := '0';
+		SS_RD_DATA	: out std_logic_vector(31 downto 0)
 	);
 end PCM;
 
@@ -69,6 +77,7 @@ architecture rtl of PCM is
 	signal LOUT, ROUT : signed(15 downto 0);
 		
 	signal PCM_REF   : integer;
+	signal DO_INT    : std_logic_vector(7 downto 0);
 	
 	impure function CLAMP16(a: unsigned(16 downto 0)) return unsigned is
 		variable res: unsigned(15 downto 0); 
@@ -86,7 +95,41 @@ architecture rtl of PCM is
 
 begin
 
-	EN <= ENABLE and CLKEN;
+	EN <= ENABLE and CLKEN and not SS_FREEZE;
+
+	----------------------------------------------------------------
+	-- Savestate read chain
+	----------------------------------------------------------------
+	SS_RD_DATA <=
+		"0000000000" & OLD_RD_N & OLD_WR_N & std_logic_vector(CH) & STEP &
+		CHOFF & ONOFF & CB & WB                                       when SS_ADDR = "000000" else
+		ENV(3) & ENV(2) & ENV(1) & ENV(0)                             when SS_ADDR = "000001" else
+		ENV(7) & ENV(6) & ENV(5) & ENV(4)                             when SS_ADDR = "000010" else
+		PAN(3) & PAN(2) & PAN(1) & PAN(0)                             when SS_ADDR = "000011" else
+		PAN(7) & PAN(6) & PAN(5) & PAN(4)                             when SS_ADDR = "000100" else
+		FD(1) & FD(0)                                                 when SS_ADDR = "000101" else
+		FD(3) & FD(2)                                                 when SS_ADDR = "000110" else
+		FD(5) & FD(4)                                                 when SS_ADDR = "000111" else
+		FD(7) & FD(6)                                                 when SS_ADDR = "001000" else
+		LS(1) & LS(0)                                                 when SS_ADDR = "001001" else
+		LS(3) & LS(2)                                                 when SS_ADDR = "001010" else
+		LS(5) & LS(4)                                                 when SS_ADDR = "001011" else
+		LS(7) & LS(6)                                                 when SS_ADDR = "001100" else
+		ST(3) & ST(2) & ST(1) & ST(0)                                 when SS_ADDR = "001101" else
+		ST(7) & ST(6) & ST(5) & ST(4)                                 when SS_ADDR = "001110" else
+		"00000" & WRA(0)   when SS_ADDR = "001111" else
+		"00000" & WRA(1)   when SS_ADDR = "010000" else
+		"00000" & WRA(2)   when SS_ADDR = "010001" else
+		"00000" & WRA(3)   when SS_ADDR = "010010" else
+		"00000" & WRA(4)   when SS_ADDR = "010011" else
+		"00000" & WRA(5)   when SS_ADDR = "010100" else
+		"00000" & WRA(6)   when SS_ADDR = "010101" else
+		"00000" & WRA(7)   when SS_ADDR = "010110" else
+		std_logic_vector(ROUT) & std_logic_vector(LOUT)               when SS_ADDR = "010111" else
+		"000000000000000" & std_logic_vector(LSUM)                    when SS_ADDR = "011000" else
+		"000000000000000" & std_logic_vector(RSUM)                    when SS_ADDR = "011001" else
+		x"0000" & DO_INT & RAM_DI                                     when SS_ADDR = "011010" else
+		(others => '0');
 	
 	process( RST_N, CLK )
 	begin
@@ -97,6 +140,11 @@ begin
 			if EN = '1' then
 				OLD_WR_N <= WR_N;
 				OLD_RD_N <= RD_N;
+			end if;
+
+			if SS_WR_EN = '1' and SS_ADDR = "000000" then
+				OLD_WR_N <= SS_WR_DATA(20);
+				OLD_RD_N <= SS_WR_DATA(21);
 			end if;
 		end if;
 	end process;
@@ -121,7 +169,7 @@ begin
 			LS <= (others => (others => '0'));
 			ST <= (others => (others => '0'));
 			CHOFF <= (others => '0');
-			DO <= (others => '0');
+			DO_INT <= (others => '0');
 		elsif rising_edge(CLK) then
 			if EN = '1' then
 				if IO_WR = '1' then
@@ -154,45 +202,86 @@ begin
 				elsif IO_RD = '1' then
 					case A(3 downto 0) is
 						when x"0" =>			--
-							DO <= WRA(0)(18 downto 11);
+							DO_INT <= WRA(0)(18 downto 11);
 						when x"1" =>			--
-							DO <= WRA(0)(26 downto 19);
+							DO_INT <= WRA(0)(26 downto 19);
 						when x"2" =>			--
-							DO <= WRA(1)(18 downto 11);
+							DO_INT <= WRA(1)(18 downto 11);
 						when x"3" =>			--
-							DO <= WRA(1)(26 downto 19);
+							DO_INT <= WRA(1)(26 downto 19);
 						when x"4" =>			--
-							DO <= WRA(2)(18 downto 11);
+							DO_INT <= WRA(2)(18 downto 11);
 						when x"5" =>			--
-							DO <= WRA(2)(26 downto 19);
+							DO_INT <= WRA(2)(26 downto 19);
 						when x"6" =>			--
-							DO <= WRA(3)(18 downto 11);
+							DO_INT <= WRA(3)(18 downto 11);
 						when x"7" =>			--
-							DO <= WRA(3)(26 downto 19);
+							DO_INT <= WRA(3)(26 downto 19);
 						when x"8" =>			--
-							DO <= WRA(4)(18 downto 11);
+							DO_INT <= WRA(4)(18 downto 11);
 						when x"9" =>			--
-							DO <= WRA(4)(26 downto 19);
+							DO_INT <= WRA(4)(26 downto 19);
 						when x"A" =>			--
-							DO <= WRA(5)(18 downto 11);
+							DO_INT <= WRA(5)(18 downto 11);
 						when x"B" =>			--
-							DO <= WRA(5)(26 downto 19);
+							DO_INT <= WRA(5)(26 downto 19);
 						when x"C" =>			--
-							DO <= WRA(6)(18 downto 11);
+							DO_INT <= WRA(6)(18 downto 11);
 						when x"D" =>			--
-							DO <= WRA(6)(26 downto 19);
+							DO_INT <= WRA(6)(26 downto 19);
 						when x"E" =>			--
-							DO <= WRA(7)(18 downto 11);
+							DO_INT <= WRA(7)(18 downto 11);
 						when x"F" =>			--
-							DO <= WRA(7)(26 downto 19);
+							DO_INT <= WRA(7)(26 downto 19);
 						when others => null;
 					end case;
 				elsif RAM_RD = '1' then
-					DO <= RAM_DI_A;
+					DO_INT <= RAM_DI_A;
 				end if;
+
+			end if;
+
+			--Savestate restore for the register file this process owns.
+			if SS_WR_EN = '1' then
+				case SS_ADDR is
+					when "000000" =>
+						WB    <= SS_WR_DATA(3 downto 0);
+						CB    <= SS_WR_DATA(6 downto 4);
+						ONOFF <= SS_WR_DATA(7);
+						CHOFF <= SS_WR_DATA(15 downto 8);
+					when "000001" =>
+						ENV(0) <= SS_WR_DATA(7 downto 0);   ENV(1) <= SS_WR_DATA(15 downto 8);
+						ENV(2) <= SS_WR_DATA(23 downto 16); ENV(3) <= SS_WR_DATA(31 downto 24);
+					when "000010" =>
+						ENV(4) <= SS_WR_DATA(7 downto 0);   ENV(5) <= SS_WR_DATA(15 downto 8);
+						ENV(6) <= SS_WR_DATA(23 downto 16); ENV(7) <= SS_WR_DATA(31 downto 24);
+					when "000011" =>
+						PAN(0) <= SS_WR_DATA(7 downto 0);   PAN(1) <= SS_WR_DATA(15 downto 8);
+						PAN(2) <= SS_WR_DATA(23 downto 16); PAN(3) <= SS_WR_DATA(31 downto 24);
+					when "000100" =>
+						PAN(4) <= SS_WR_DATA(7 downto 0);   PAN(5) <= SS_WR_DATA(15 downto 8);
+						PAN(6) <= SS_WR_DATA(23 downto 16); PAN(7) <= SS_WR_DATA(31 downto 24);
+					when "000101" => FD(0) <= SS_WR_DATA(15 downto 0); FD(1) <= SS_WR_DATA(31 downto 16);
+					when "000110" => FD(2) <= SS_WR_DATA(15 downto 0); FD(3) <= SS_WR_DATA(31 downto 16);
+					when "000111" => FD(4) <= SS_WR_DATA(15 downto 0); FD(5) <= SS_WR_DATA(31 downto 16);
+					when "001000" => FD(6) <= SS_WR_DATA(15 downto 0); FD(7) <= SS_WR_DATA(31 downto 16);
+					when "001001" => LS(0) <= SS_WR_DATA(15 downto 0); LS(1) <= SS_WR_DATA(31 downto 16);
+					when "001010" => LS(2) <= SS_WR_DATA(15 downto 0); LS(3) <= SS_WR_DATA(31 downto 16);
+					when "001011" => LS(4) <= SS_WR_DATA(15 downto 0); LS(5) <= SS_WR_DATA(31 downto 16);
+					when "001100" => LS(6) <= SS_WR_DATA(15 downto 0); LS(7) <= SS_WR_DATA(31 downto 16);
+					when "001101" =>
+						ST(0) <= SS_WR_DATA(7 downto 0);   ST(1) <= SS_WR_DATA(15 downto 8);
+						ST(2) <= SS_WR_DATA(23 downto 16); ST(3) <= SS_WR_DATA(31 downto 24);
+					when "001110" =>
+						ST(4) <= SS_WR_DATA(7 downto 0);   ST(5) <= SS_WR_DATA(15 downto 8);
+						ST(6) <= SS_WR_DATA(23 downto 16); ST(7) <= SS_WR_DATA(31 downto 24);
+					when others => null;
+				end case;
 			end if;
 		end if;
 	end process;
+
+	DO <= DO_INT;
 	
 	RAM_ADDR_A <= WB & A(11 downto 0);
 	RAM_DO_A <= DI;
@@ -275,6 +364,30 @@ begin
 						WRA(to_integer(CH)) <= std_logic_vector( unsigned(WRA(to_integer(CH))) + unsigned(FD(to_integer(CH))) );
 					end if;
 				end if;
+			end if;
+
+			--Savestate restore for the playback engine.
+			if SS_WR_EN = '1' then
+				case SS_ADDR is
+					when "000000" =>
+						STEP <= SS_WR_DATA(16);
+						CH   <= unsigned(SS_WR_DATA(19 downto 17));
+					when "001111" => WRA(0) <= SS_WR_DATA(26 downto 0);
+					when "010000" => WRA(1) <= SS_WR_DATA(26 downto 0);
+					when "010001" => WRA(2) <= SS_WR_DATA(26 downto 0);
+					when "010010" => WRA(3) <= SS_WR_DATA(26 downto 0);
+					when "010011" => WRA(4) <= SS_WR_DATA(26 downto 0);
+					when "010100" => WRA(5) <= SS_WR_DATA(26 downto 0);
+					when "010101" => WRA(6) <= SS_WR_DATA(26 downto 0);
+					when "010110" => WRA(7) <= SS_WR_DATA(26 downto 0);
+					when "010111" =>
+						LOUT <= signed(SS_WR_DATA(15 downto 0));
+						ROUT <= signed(SS_WR_DATA(31 downto 16));
+					when "011000" => LSUM <= unsigned(SS_WR_DATA(16 downto 0));
+					when "011001" => RSUM <= unsigned(SS_WR_DATA(16 downto 0));
+					when "011010" => RAM_DI <= SS_WR_DATA(7 downto 0);
+					when others => null;
+				end case;
 			end if;
 		end if;
 	end process;

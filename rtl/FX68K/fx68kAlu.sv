@@ -43,7 +43,12 @@ module fx68kAlu ( input clk, pwrUp, enT1, enT3, enT4,
 	output ze,
 	output reg [15:0] alue,
 	output reg [7:0] ccr,
-	output [15:0] aluOut);
+	output [15:0] aluOut,
+	// Savestate ALU words 98-105.
+	input [7:0] ss_addr,
+	input [15:0] ss_wr_data,
+	input ss_wr_en,
+	output logic [15:0] ss_rd);
 
 
 `define ALU_ROW_01		16'h0002
@@ -125,6 +130,13 @@ module fx68kAlu ( input clk, pwrUp, enT1, enT3, enT4,
 	
 	// Register some decoded signals	
 	always_ff @( posedge clk) begin
+		if( ss_wr_en) begin
+			if( ss_addr == 8'd102) row <= ss_wr_data;
+			if( ss_addr == 8'd103) { isByte, noCcrEn, isArX} <= ss_wr_data[2:0];
+			if( ss_addr == 8'd104) { oper, ccrMask} <= ss_wr_data[9:0];
+			if( ss_addr == 8'd105) { isLong, rIrd8} <= ss_wr_data[11:10];
+		end
+		else begin
 		if( enT3) begin
 			row <= cRow;
 			isArX <= cIsArX;
@@ -141,6 +153,7 @@ module fx68kAlu ( input clk, pwrUp, enT1, enT3, enT4,
 			ccrMask <= cMask;
 			oper <= aluOp;
 		end
+		end		// ss_wr_en else
 	end
 	
 	
@@ -180,7 +193,11 @@ module fx68kAlu ( input clk, pwrUp, enT1, enT3, enT4,
 	// Precompute and register BCD result on T1
 	// We don't need to wait for execution buses because corf is always added to ALU previous result
 	always_ff @( posedge clk)
-		if( enT1) begin
+		if( ss_wr_en) begin
+			if( ss_addr == 8'd105)
+				{ bcdOverf, bcdCarry, bcdLatch} <= ss_wr_data[9:0];
+		end
+		else if( enT1) begin
 			bcdLatch <= bcdResult;
 			bcdCarry <= bcdC;
 			bcdOverf <= bcdV;
@@ -424,6 +441,13 @@ module fx68kAlu ( input clk, pwrUp, enT1, enT3, enT4,
 	end
 		
 	always_ff @( posedge clk) begin
+		if( ss_wr_en) begin
+			if( ss_addr == 8'd98)  aluLatch <= ss_wr_data;
+			if( ss_addr == 8'd99)  { pswCcr, ccrCore} <= ss_wr_data[9:0];
+			if( ss_addr == 8'd100) coreH <= ss_wr_data[0];
+			if( ss_addr == 8'd101) alue <= ss_wr_data;
+		end
+		else begin
 		if( enT3) begin
 			// Update latches from ALU operators
 			if( (| aluColumn)) begin
@@ -451,8 +475,24 @@ module fx68kAlu ( input clk, pwrUp, enT1, enT3, enT4,
 			pswCcr <= ftu[4:0];	
 		else if( enT3 &	~noCcrEn & (finish | init))
 			pswCcr <= ccrMasked;
+		end		// ss_wr_en else
 	end
 	assign ccr = { 3'b0, pswCcr};	
+
+	// Savestate read mux for words 98-105.
+	always_comb begin
+		case( ss_addr)
+		8'd98:  ss_rd = aluLatch;
+		8'd99:  ss_rd = { 6'd0, pswCcr, ccrCore};
+		8'd100: ss_rd = { 15'd0, coreH};
+		8'd101: ss_rd = alue;
+		8'd102: ss_rd = row;
+		8'd103: ss_rd = { 13'd0, isByte, noCcrEn, isArX};
+		8'd104: ss_rd = { 6'd0, oper, ccrMask};
+		8'd105: ss_rd = { 4'd0, isLong, rIrd8, bcdOverf, bcdCarry, bcdLatch};
+		default: ss_rd = 16'd0;
+		endcase
+	end
 
 	      
 endmodule

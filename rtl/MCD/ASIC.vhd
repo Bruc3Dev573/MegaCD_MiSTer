@@ -97,7 +97,24 @@ entity ASIC is
 		FD_WR				: out std_logic;
 		
 		LED_RED			: out std_logic;
-		LED_GREEN		: out std_logic
+		LED_GREEN		: out std_logic;
+
+		--Savestate access to the Gate Array, CDD, timer and interrupt state.
+		--Capture waits for arbitration and DMA to drain. Restore resets their FSMs to idle.
+		SS_ADDR			: in std_logic_vector(7 downto 0) := (others => '0');
+		SS_WR_DATA		: in std_logic_vector(31 downto 0) := (others => '0');
+		SS_WR_EN			: in std_logic := '0';
+		SS_RD_DATA		: out std_logic_vector(31 downto 0);
+
+		--SS_QUIET is high only when every engine that can be mid-transfer is at rest.
+		--A state captured during a transfer restores into a transfer that never ends.
+		SS_FREEZE		: in std_logic := '0';
+		--Blocks new CDC DMA handshakes while a freeze waits for quiet.
+		--An open transfer still drains before SS_FREEZE stops the ASIC.
+		SS_QUIESCE		: in std_logic := '0';
+		SS_QUIET			: out std_logic;
+		--Per-term breakdown of SS_QUIET, so a term that stays low can be identified.
+		SS_QUIET_BITS	: out std_logic_vector(13 downto 0)
 	);
 end ASIC;
 
@@ -293,10 +310,12 @@ architecture rtl of ASIC is
 	signal HS 							: HaltState_t;
 	signal HALT_WAIT 					: unsigned(1 downto 0);
 	signal S68K_HALT 					: std_logic;
+	signal PRG_ACCESS_BUSY			: std_logic;
 			
 begin
 
-	EN <= ENABLE;
+	--Freeze only after the capture grant, so outstanding bus cycles can finish.
+	EN <= ENABLE and not SS_FREEZE;
 	
 	process( CLK )
 	begin
@@ -371,6 +390,17 @@ begin
 					MODE <= S68K_DI(2);
 				end if;
 			end if;
+
+			--Savestate restore of Word RAM ownership. MODE selects 1M or 2M and DMNA and RET
+			--are the handover flags. They decide which CPU sees which half of Word RAM.
+			--The *_REQ and *_SET signals are not restored because they are zero at capture.
+			if SS_WR_EN = '1' and SS_ADDR = x"00" then
+				MODE  <= SS_WR_DATA(6);
+				DMNA0 <= SS_WR_DATA(7);
+				DMNA1 <= SS_WR_DATA(8);
+				RET0  <= SS_WR_DATA(9);
+				RET1  <= SS_WR_DATA(10);
+			end if;
 		end if;
 	end process;
 	
@@ -399,7 +429,8 @@ begin
 				case DS is
 					when DS_IDLE =>
 						if CDC_DTEN_N = '0' then
-							if CDC_WAIT_N = '1' then
+							if (SS_QUIESCE = '0' or DMA_BYTE = '1' or DD(2) = '1') and
+							   CDC_WAIT_N = '1' then
 								CDC_HRD <= '1';
 								DS <= DS_CDC_READ;
 								
@@ -494,8 +525,128 @@ begin
 					when others => null;
 				end case;
 			end if;
+
+			--Savestate restore for the CDC transfer registers this process owns.
+			--DS is not saved. Capture happens with DS at DS_IDLE, so restore sets it to DS_IDLE.
+			--DMA_BYTE and DMA_DAT hold a half-assembled host-read word and are not saved.
+			--Capture always has DMA_BYTE at 0, but the running machine may not. Clearing it
+			--keeps the first restored CDC byte in DMA_DAT bits 15 to 8.
+			if SS_WR_EN = '1' then
+				case SS_ADDR is
+					when x"00" =>
+						EDT      <= SS_WR_DATA(15);
+						DSR      <= SS_WR_DATA(16);
+						DS       <= DS_IDLE;
+						DMA_RUN  <= '0';
+						CDC_HRD  <= '0';
+						DMA_BYTE <= '0';
+						DMA_DAT  <= (others => '0');
+					when x"02" =>
+						HD <= SS_WR_DATA(15 downto 0);
+					when others => null;
+				end case;
+			end if;
 		end if;
 	end process;
+
+	----------------------------------------------------------------
+	-- Savestate quiescence
+	----------------------------------------------------------------
+	-- Terms that must be idle before capture:
+	--   DS, *_DMA_RUN  Gate Array DMA. Freezing mid-transfer corrupts the destination.
+	--   GS             Stamp and rotation engine. GFX_RMW marks an open Word RAM update.
+	--   WR0A, WR1A     Word RAM access arbitration.
+	--   *_REQ          A pending 1M or 2M swap.
+	--   PCMA, HS       The two paths that halt the sub-CPU.
+	--   PRMS, PRSS     PRG-RAM access and refresh.
+	--Refresh holds no game state. Reads, writes and DMA must drain.
+	PRG_ACCESS_BUSY <= '0' when (PRMS = PRS_IDLE or PRMS = PRS_REFRESH_WAIT or
+	                             PRMS = PRS_REFRESH or PRMS = PRS_REFRESH_END) and
+	                            (PRSS = PRS_IDLE or PRSS = PRS_REFRESH_WAIT or
+	                             PRSS = PRS_REFRESH or PRSS = PRS_REFRESH_END)
+	                   else '1';
+
+	SS_QUIET_BITS(0)  <= '1' when DS = DS_IDLE and DMA_BYTE = '0' else '0';
+	SS_QUIET_BITS(1)  <= '1' when GS   = GS_IDLE   else '0';
+	SS_QUIET_BITS(2)  <= '1' when WR0A = WRA_IDLE  else '0';
+	SS_QUIET_BITS(3)  <= '1' when WR1A = WRA_IDLE  else '0';
+	SS_QUIET_BITS(4)  <= '1' when PCMA = PCMA_IDLE else '0';
+	SS_QUIET_BITS(5)  <= '1' when HS   = HS_IDLE   else '0';
+	SS_QUIET_BITS(6)  <= not PRG_ACCESS_BUSY;
+	SS_QUIET_BITS(7)  <= not DMA_RUN;
+	SS_QUIET_BITS(8)  <= not PR_DMA_RUN;
+	SS_QUIET_BITS(9)  <= not WR_DMA_RUN;
+	SS_QUIET_BITS(10) <= not PCM_DMA_RUN;
+	-- Reserved quiet-report bits. Word RAM arbitration is covered above.
+	SS_QUIET_BITS(13 downto 11) <= (others => '0');
+
+	--Both CPUs must finish Gate Array register cycles before capture.
+	SS_QUIET <= '1' when DS = DS_IDLE and DMA_BYTE = '0' and GS = GS_IDLE and
+	                     WR0A = WRA_IDLE and WR1A = WRA_IDLE and
+	                     PCMA = PCMA_IDLE and HS = HS_IDLE and
+	                     PRG_ACCESS_BUSY = '0' and
+	                     DMA_RUN = '0' and PR_DMA_RUN = '0' and
+	                     WR_DMA_RUN = '0' and PCM_DMA_RUN = '0' and
+	                     M68K_GA_SEL = '0' and S68K_GA_SEL = '0'
+	            else '0';
+
+	----------------------------------------------------------------
+	-- Savestate read chain
+	----------------------------------------------------------------
+	-- One 32-bit word per line. Reserved words read 0 so they can be used later.
+	SS_RD_DATA <=
+		--w0 single-bit control state
+		x"00" & "0" & HOCK & SAOR & SMS & STS & RPT & GRON & DSR & EDT &
+		         BK & PM & RET1 & RET0 & DMNA1 & DMNA0 & MODE & IFL2 & SBRQ &
+		         SRES & LEDG & LEDR & RES0
+			when SS_ADDR = x"00" else
+		--w1
+		"0000000" & DOT & LN & SC1 & SC0 & DD & WP
+			when SS_ADDR = x"01" else
+		--w2
+		"0000" & SW & HD
+			when SS_ADDR = x"02" else
+		--w3
+		CFM & CFS & DMAA
+			when SS_ADDR = x"03" else
+		--w4
+		SB & HIB
+			when SS_ADDR = x"04" else
+		--w5
+		"0000000" & STA & VCS & IEN & TM
+			when SS_ADDR = x"05" else
+		--w6
+		x"00" & ISA & SMBA
+			when SS_ADDR = x"06" else
+		--w7
+		TVBA & VW & HW
+			when SS_ADDR = x"07" else
+		--w8 to w11 CC, two 16-bit entries per word
+		CC(to_integer(unsigned(SS_ADDR(1 downto 0)) & "1")) &
+		CC(to_integer(unsigned(SS_ADDR(1 downto 0)) & "0"))
+			when SS_ADDR(7 downto 2) = "000010" else
+		--w12 to w15 CS
+		CS(to_integer(unsigned(SS_ADDR(1 downto 0)) & "1")) &
+		CS(to_integer(unsigned(SS_ADDR(1 downto 0)) & "0"))
+			when SS_ADDR(7 downto 2) = "000011" else
+		--w16 to w47 SBA, 64 entries, two per word
+		SBA(to_integer(unsigned(SS_ADDR(4 downto 0)) & "1")) &
+		SBA(to_integer(unsigned(SS_ADDR(4 downto 0)) & "0"))
+			when SS_ADDR(7 downto 5) = "000" and unsigned(SS_ADDR) >= 16 else
+		--w48 and w49 CDD status, 40 bits
+		CDDS(31 downto 0)                      when SS_ADDR = x"30" else
+		x"000000" & CDDS(39 downto 32)         when SS_ADDR = x"31" else
+		--w50 and w51 CDD command
+		CDDC(31 downto 0)                      when SS_ADDR = x"32" else
+		x"000000" & CDDC(39 downto 32)         when SS_ADDR = x"33" else
+		--w52 timer and interrupts
+		"000" & std_logic_vector(TIME_CLK_CNT) & INT_ACK & INT_PEND &
+		std_logic_vector(TIMER)
+			when SS_ADDR = x"34" else
+		--w53 halt and reset handshake that cannot be derived
+		x"0000000" & "0" & MCD_RST_DONE & SUB_RST_EXEC & MAIN_RST_EXEC
+			when SS_ADDR = x"35" else
+		(others => '0');
 	
 	CDC_HRD_N <= not CDC_HRD;
 	
@@ -703,6 +854,33 @@ begin
 				M68K_REG_DTACK_N <= '0';
 			elsif M68K_REG_DTACK_N = '0' and EXT_AS_N = '1' then
 				M68K_REG_DTACK_N <= '1';
+			end if;
+
+			--Savestate restore for the registers this process owns. It goes last, see the
+			--note in the sub-CPU register process.
+			if SS_WR_EN = '1' then
+				case SS_ADDR is
+					when x"00" =>
+						SRES <= SS_WR_DATA(3);
+						SBRQ <= SS_WR_DATA(4);
+						IFL2 <= SS_WR_DATA(5);
+						BK   <= SS_WR_DATA(14 downto 13);
+					when x"01" =>
+						WP <= SS_WR_DATA(7 downto 0);
+					when x"03" =>
+						CFM <= SS_WR_DATA(31 downto 24);
+					when x"04" =>
+						HIB <= SS_WR_DATA(15 downto 0);
+					when x"34" =>
+						INT_PEND(2) <= SS_WR_DATA(9);
+					when x"35" =>
+						MAIN_RST_EXEC <= SS_WR_DATA(0);
+					when others =>
+						if SS_ADDR(7 downto 2) = "000010" then
+							CC(to_integer(unsigned(SS_ADDR(1 downto 0)) & "0")) <= SS_WR_DATA(15 downto 0);
+							CC(to_integer(unsigned(SS_ADDR(1 downto 0)) & "1")) <= SS_WR_DATA(31 downto 16);
+						end if;
+				end case;
 			end if;
 		end if;
 	end process;
@@ -1288,6 +1466,78 @@ begin
 					end if;
 				end if;
 			end if;
+
+			--Savestate restore for the registers this process owns.
+			--It is the last assignment in the process, so it overrides the normal logic.
+			--This is safe because SS_WR_EN only pulses while the core is frozen.
+			if SS_WR_EN = '1' then
+				case SS_ADDR is
+					when x"00" =>
+						RES0 <= SS_WR_DATA(0);
+						LEDR <= SS_WR_DATA(1);
+						LEDG <= SS_WR_DATA(2);
+						PM   <= SS_WR_DATA(12 downto 11);
+						GRON <= SS_WR_DATA(17);
+						RPT  <= SS_WR_DATA(18);
+						STS  <= SS_WR_DATA(19);
+						SMS  <= SS_WR_DATA(20);
+						SAOR <= SS_WR_DATA(21);
+						HOCK <= SS_WR_DATA(22);
+						--The status from Main can arrive while SS_FREEZE holds EN low.
+						--The top level keeps CDD_REC high until unfreeze. CDD_REC_OLD is not
+						--saved, so it is set from the restored HOCK level to keep the rising
+						--edge that the BIOS waits for.
+						CDD_REC_OLD <= '0';
+						CDD_STAT_RECEIVED <= '0';
+						HOCK_OLD <= SS_WR_DATA(22);
+						CDD_SEND <= '0';
+					when x"01" =>
+						DD  <= SS_WR_DATA(10 downto 8);
+						SC0 <= SS_WR_DATA(14 downto 11);
+						SC1 <= SS_WR_DATA(18 downto 15);
+						LN  <= SS_WR_DATA(21 downto 19);
+						DOT <= SS_WR_DATA(24 downto 22);
+					when x"02" =>
+						SW <= SS_WR_DATA(27 downto 16);
+					when x"03" =>
+						DMAA <= SS_WR_DATA(15 downto 0);
+						CFS  <= SS_WR_DATA(23 downto 16);
+					when x"05" =>
+						TM  <= SS_WR_DATA(7 downto 0);
+						IEN <= SS_WR_DATA(13 downto 8);
+						VCS <= SS_WR_DATA(18 downto 14);
+						STA <= SS_WR_DATA(24 downto 19);
+					when x"06" =>
+						SMBA <= SS_WR_DATA(10 downto 0);
+						ISA  <= SS_WR_DATA(23 downto 11);
+					when x"07" =>
+						HW   <= SS_WR_DATA(8 downto 0);
+						VW   <= SS_WR_DATA(16 downto 9);
+						TVBA <= SS_WR_DATA(31 downto 17);
+					when x"30" => CDDS(31 downto 0)  <= SS_WR_DATA;
+					when x"31" => CDDS(39 downto 32) <= SS_WR_DATA(7 downto 0);
+					when x"32" => CDDC(31 downto 0)  <= SS_WR_DATA;
+					when x"33" => CDDC(39 downto 32) <= SS_WR_DATA(7 downto 0);
+					when x"34" =>
+						TIMER        <= unsigned(SS_WR_DATA(7 downto 0));
+						INT_PEND(6)  <= SS_WR_DATA(13);
+						INT_PEND(5)  <= SS_WR_DATA(12);
+						INT_PEND(4)  <= SS_WR_DATA(11);
+						INT_PEND(3)  <= SS_WR_DATA(10);
+						TIME_CLK_CNT <= unsigned(SS_WR_DATA(28 downto 20));
+					when x"35" =>
+						SUB_RST_EXEC <= SS_WR_DATA(1);
+					when others =>
+						--CS and SBA are arrays indexed by address, so they are restored here.
+						if SS_ADDR(7 downto 2) = "000011" then
+							CS(to_integer(unsigned(SS_ADDR(1 downto 0)) & "0")) <= SS_WR_DATA(15 downto 0);
+							CS(to_integer(unsigned(SS_ADDR(1 downto 0)) & "1")) <= SS_WR_DATA(31 downto 16);
+						elsif SS_ADDR(7 downto 5) = "000" and unsigned(SS_ADDR) >= 16 then
+							SBA(to_integer(unsigned(SS_ADDR(4 downto 0)) & "0")) <= SS_WR_DATA(15 downto 0);
+							SBA(to_integer(unsigned(SS_ADDR(4 downto 0)) & "1")) <= SS_WR_DATA(31 downto 16);
+						end if;
+				end case;
+			end if;
 		end if;
 	end process;
 	
@@ -1526,6 +1776,20 @@ begin
 					when others => null;
 				end case;
 			end if;
+
+			--Savestate restore resets this FSM to idle, as in the Word RAM arbiter.
+			if SS_WR_EN = '1' and SS_ADDR = x"00" then
+				PRMS <= PRS_IDLE;
+				PRSS <= PRS_IDLE;
+				PR_DMA_RUN <= '0';
+				PRG_RAM_WRL <= '0';
+				PRG_RAM_WRH <= '0';
+				PRG_RAM_RD <= '0';
+				PRG_RAM_RFS <= '0';
+				M68K_PRGRAM_DTACK_N <= '1';
+				S68K_PRGRAM_DTACK_N <= '1';
+				RFS_PRGRAM_DTACK_N <= '1';
+			end if;
 		end if;
 	end process;
 	
@@ -1602,6 +1866,12 @@ begin
 					when others => null;
 				end case;
 			end if;
+
+			--Savestate restore resets this FSM to idle, as in the Word RAM arbiter.
+			if SS_WR_EN = '1' and SS_ADDR = x"00" then
+				WR0S <= WRS_IDLE;
+				WORD_RAM_1M0_WR <= '0';
+			end if;
 		end if;
 	end process;
 	
@@ -1661,6 +1931,13 @@ begin
 					
 					when others => null;
 				end case;
+			end if;
+
+			--Savestate restore resets this FSM to idle, as in the Word RAM arbiter.
+			--Otherwise it could finish a stale write into restored Word RAM.
+			if SS_WR_EN = '1' and SS_ADDR = x"00" then
+				WR1S <= WRS_IDLE;
+				WORD_RAM_1M1_WR <= '0';
 			end if;
 		end if;
 	end process;
@@ -1957,6 +2234,18 @@ begin
 					when others => null;
 				end case;
 			end if;
+
+			--Savestate restore of w0 replaces MODE, DMNA and RET. These latches and FSMs
+			--are derived from the old arbitration and are not saved. They are reset to idle
+			--so no DTACK or request is left pending for the restored owner.
+			if SS_WR_EN = '1' and SS_ADDR = x"00" then
+				M68K_WORDRAM_DTACK_N <= '1';
+				S68K_WORDRAM_DTACK_N <= '1';
+				WR0R.EXEC <= '0';
+				WR1R.EXEC <= '0';
+				WR0A <= WRA_IDLE;
+				WR1A <= WRA_IDLE;
+			end if;
 		end if;
 	end process;
 	
@@ -2214,6 +2503,18 @@ begin
 					when others => null;
 				end case;
 			end if;
+
+			--Savestate restore resets this FSM to idle, as in the Word RAM arbiter.
+			--Otherwise a stamp operation could wait in GS_XY_WAIT for a grant that never comes.
+			if SS_WR_EN = '1' and SS_ADDR = x"00" then
+				GS <= GS_IDLE;
+				GFX_SEL <= '0';
+				GFX_RMW <= '0';
+			end if;
+			--The stamp process owns the level-1 pending state, so it is restored here.
+			if SS_WR_EN = '1' and SS_ADDR = x"34" then
+				INT_PEND(1) <= SS_WR_DATA(8);
+			end if;
 		end if;
 	end process;
 
@@ -2336,6 +2637,16 @@ begin
 						
 					when others => null;
 				end case;
+			end if;
+
+			--Savestate restore resets this FSM to idle, as in the Word RAM arbiter.
+			if SS_WR_EN = '1' and SS_ADDR = x"00" then
+				S68K_PCM_DTACK_N <= '1';
+				PCMA <= PCMA_IDLE;
+				PCM_DMA_WR <= '0';
+				PCM_DMA_RUN <= '0';
+				PCM_S68K_HALT <= '0';
+				PCM_HALT_WAIT <= "00";
 			end if;
 		end if;
 	end process;

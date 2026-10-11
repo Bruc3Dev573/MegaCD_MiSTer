@@ -67,6 +67,44 @@ entity MCD is
 		GG_EN          : in std_logic;
 		GG_CODE        : in std_logic_vector(128 downto 0);
 		GG_AVAILABLE   : out std_logic;
+
+		--SS_FREEZE asks the sub-CPU to park at bus idle. SS_S68K_FROZEN reports
+		--that it has parked. The engine must not capture before that.
+		SS_FREEZE		: in std_logic := '0';
+		--Raw request: stop starting CDC transfers before the sub-CPU park gate.
+		SS_QUIESCE		: in std_logic := '0';
+		SS_S68K_FROZEN	: out std_logic;
+		SS_S68K_ADDR	: in std_logic_vector(7 downto 0) := (others => '0');
+		SS_S68K_WR_DATA: in std_logic_vector(15 downto 0) := (others => '0');
+		SS_S68K_WR_EN	: in std_logic := '0';
+		SS_S68K_RD_DATA: out std_logic_vector(15 downto 0);
+
+		--Memory access for the savestate stream. SS_ACTIVE hands the RAM ports to
+		--the engine. There is no shadow copy, the ports are muxed.
+		--SS_MEM_SEL: 0 = Word RAM, 1 = PCM wave RAM, 2 = CDC buffer.
+		SS_ACTIVE		: in std_logic := '0';
+		SS_MEM_SEL		: in std_logic_vector(1 downto 0) := "00";
+		SS_MEM_ADDR		: in std_logic_vector(16 downto 0) := (others => '0');
+		SS_MEM_WR_DATA	: in std_logic_vector(15 downto 0) := (others => '0');
+		SS_MEM_WR_EN	: in std_logic := '0';
+		SS_MEM_RD_DATA	: out std_logic_vector(15 downto 0);
+
+		--Gate Array registers (region ASIC_REGS)
+		SS_ASIC_ADDR	: in std_logic_vector(7 downto 0) := (others => '0');
+		SS_ASIC_WR_DATA: in std_logic_vector(31 downto 0) := (others => '0');
+		SS_ASIC_WR_EN	: in std_logic := '0';
+		SS_ASIC_RD_DATA: out std_logic_vector(31 downto 0);
+		SS_QUIET			: out std_logic;
+		SS_QUIET_BITS	: out std_logic_vector(13 downto 0);
+		SS_CDC_DBG		: out std_logic_vector(15 downto 0);
+		SS_CDC_HEAD		: out std_logic_vector(23 downto 0);
+
+		--Sub-device registers: 0 = CDC, 1 = PCM, 2 = CD_DAC
+		SS_DEV_SEL		: in std_logic_vector(1 downto 0) := "00";
+		SS_DEV_ADDR		: in std_logic_vector(5 downto 0) := (others => '0');
+		SS_DEV_WR_DATA	: in std_logic_vector(31 downto 0) := (others => '0');
+		SS_DEV_WR_EN	: in std_logic := '0';
+		SS_DEV_RD_DATA	: out std_logic_vector(31 downto 0);
 		
 		DBG_S68K_A		: out std_logic_vector(23 downto 0)
 	);
@@ -139,6 +177,33 @@ architecture rtl of MCD is
 	signal ASIC_FD_DAT	: std_logic_vector(10 downto 0);
 	signal ASIC_FD_WR		: std_logic;
 
+	--Savestate port muxing
+	signal SS_WR0_SEL		: std_logic;
+	signal SS_WR1_SEL		: std_logic;
+	signal SS_PCM_SEL		: std_logic;
+	signal SS_CDC_SEL		: std_logic;
+	signal WORDRAM0_A_M	: std_logic_vector(15 downto 0);
+	signal WORDRAM0_DO_M	: std_logic_vector(15 downto 0);
+	signal WORDRAM0_WR_M	: std_logic;
+	signal WORDRAM1_A_M	: std_logic_vector(15 downto 0);
+	signal WORDRAM1_DO_M	: std_logic_vector(15 downto 0);
+	signal WORDRAM1_WR_M	: std_logic;
+	signal PCM_RAM_ADDR_A_M	: std_logic_vector(15 downto 0);
+	signal PCM_RAM_DO_A_M	: std_logic_vector(7 downto 0);
+	signal PCM_RAM_WE_A_M	: std_logic;
+	signal CDC_RAM_A_RD_M	: std_logic_vector(13 downto 0);
+	signal CDC_RAM_DATA_A_M	: std_logic_vector(7 downto 0);
+	signal CDC_RAM_WE_A_M	: std_logic;
+	signal MCD_EN_AUDIO		: std_logic;
+	signal SS_CDC_WR_EN		: std_logic;
+	signal SS_CDC_RD_DATA	: std_logic_vector(31 downto 0);
+	signal SS_CDC_QUIET		: std_logic;
+	signal SS_ASIC_QUIET		: std_logic;
+	signal SS_PCM_WR_EN		: std_logic;
+	signal SS_PCM_RD_DATA	: std_logic_vector(31 downto 0);
+	signal SS_CDDA_WR_EN		: std_logic;
+	signal SS_CDDA_RD_DATA	: std_logic_vector(31 downto 0);
+
 	signal GENIE_DATA    : std_logic_vector(15 downto 0);
 	
 	component CODES
@@ -202,7 +267,14 @@ begin
 		HALT_I_N		=> S68K_HALT_N,
 		BERR_N   	=> '1',
 		BR_N   		=> '1',
-		BGACK_N   	=> '1'
+		BGACK_N   	=> '1',
+
+		SS_FREEZE	=> SS_FREEZE,
+		SS_FROZEN	=> SS_S68K_FROZEN,
+		SS_ADDR		=> SS_S68K_ADDR,
+		SS_WR_DATA	=> SS_S68K_WR_DATA,
+		SS_WR_EN		=> SS_S68K_WR_EN,
+		SS_RD_DATA	=> SS_S68K_RD_DATA
 	);
 	
 	S68K_DI(7 downto 0) <= CDC_DO when CDC_N = '0' else
@@ -302,8 +374,21 @@ begin
 		FD_WR 			=> ASIC_FD_WR,
 		
 		LED_RED   		=> LED_RED,
-		LED_GREEN   	=> LED_GREEN
+		LED_GREEN   	=> LED_GREEN,
+
+		SS_ADDR			=> SS_ASIC_ADDR,
+		SS_WR_DATA		=> SS_ASIC_WR_DATA,
+		SS_WR_EN			=> SS_ASIC_WR_EN,
+		SS_RD_DATA		=> SS_ASIC_RD_DATA,
+		SS_FREEZE		=> SS_ACTIVE,
+		SS_QUIESCE		=> SS_QUIESCE,
+		SS_QUIET			=> SS_ASIC_QUIET,
+		SS_QUIET_BITS	=> SS_QUIET_BITS
 	);
+
+	--The MegaCD is quiet only when both the Gate Array and the CDC are, so a host
+	--transfer is never captured mid-flight.
+	SS_QUIET <= SS_ASIC_QUIET and SS_CDC_QUIET;
 	
 	MCD_RST_N <= ERES_N;
 
@@ -312,13 +397,39 @@ begin
 	BRAM_WE <= not (CLWE_N or BRAM_N);
 	
 	
+	--Savestate port muxes. While SS_ACTIVE the engine owns these ports. Both 68000s
+	--are enable-gated and PCM and CD_DAC are held, so nothing else drives them.
+	--Word RAM is two 64Kx16 single-port RAMs and SS_MEM_ADDR(16) picks the half.
+	--This is the physical layout, not the logical 1M/2M view. The view is rebuilt
+	--from the Word RAM mode bits in ASIC_REGS, so the swap must be quiet before capture.
+	SS_WR0_SEL <= '1' when SS_ACTIVE = '1' and SS_MEM_SEL = "00" and SS_MEM_ADDR(16) = '0' else '0';
+	SS_WR1_SEL <= '1' when SS_ACTIVE = '1' and SS_MEM_SEL = "00" and SS_MEM_ADDR(16) = '1' else '0';
+	SS_PCM_SEL <= '1' when SS_ACTIVE = '1' and SS_MEM_SEL = "01" else '0';
+	SS_CDC_SEL <= '1' when SS_ACTIVE = '1' and SS_MEM_SEL = "10" else '0';
+
+	WORDRAM0_A_M  <= SS_MEM_ADDR(15 downto 0) when SS_WR0_SEL = '1' else WORDRAM0_A;
+	WORDRAM0_DO_M <= SS_MEM_WR_DATA           when SS_WR0_SEL = '1' else WORDRAM0_DO;
+	WORDRAM0_WR_M <= SS_MEM_WR_EN             when SS_WR0_SEL = '1' else
+	                 '0'                      when SS_ACTIVE = '1'  else WORDRAM0_WR;
+
+	WORDRAM1_A_M  <= SS_MEM_ADDR(15 downto 0) when SS_WR1_SEL = '1' else WORDRAM1_A;
+	WORDRAM1_DO_M <= SS_MEM_WR_DATA           when SS_WR1_SEL = '1' else WORDRAM1_DO;
+	WORDRAM1_WR_M <= SS_MEM_WR_EN             when SS_WR1_SEL = '1' else
+	                 '0'                      when SS_ACTIVE = '1'  else WORDRAM1_WR;
+
+	SS_MEM_RD_DATA <= WORDRAM0_DI                  when SS_MEM_SEL = "00" and SS_MEM_ADDR(16) = '0' else
+	                  WORDRAM1_DI                  when SS_MEM_SEL = "00" else
+	                  x"00" & PCM_RAM_DI_A         when SS_MEM_SEL = "01" else
+	                  x"00" & CDC_RAM_DI           when SS_MEM_SEL = "10" else
+	                  (others => '0');
+
 	WORDRAM0 : entity work.spram
 	generic map(16,16)
 	port map(
 		clock		=> CLK,
-		address	=> WORDRAM0_A,
-		data		=> WORDRAM0_DO,
-		wren		=> WORDRAM0_WR,
+		address	=> WORDRAM0_A_M,
+		data		=> WORDRAM0_DO_M,
+		wren		=> WORDRAM0_WR_M,
 		q			=> WORDRAM0_DI
 	);
 
@@ -326,9 +437,9 @@ begin
 	generic map(16,16)
 	port map(
 		clock		=> CLK,
-		address	=> WORDRAM1_A,
-		data		=> WORDRAM1_DO,
-		wren		=> WORDRAM1_WR,
+		address	=> WORDRAM1_A_M,
+		data		=> WORDRAM1_DO_M,
+		wren		=> WORDRAM1_WR_M,
 		q			=> WORDRAM1_DI
 	);
 	
@@ -361,14 +472,31 @@ begin
 		RAM_A_RD   	=> CDC_RAM_A_RD,
 		RAM_DI   	=> CDC_RAM_DI,
 		RAM_DO   	=> CDC_RAM_DO,
-		RAM_WE   	=> CDC_RAM_WE
+		RAM_WE   	=> CDC_RAM_WE,
+
+		SS_ADDR		=> SS_DEV_ADDR,
+		SS_WR_DATA	=> SS_DEV_WR_DATA,
+		SS_WR_EN		=> SS_CDC_WR_EN,
+		SS_RD_DATA	=> SS_CDC_RD_DATA,
+		SS_QUIET		=> SS_CDC_QUIET,
+		SS_FREEZE	=> SS_ACTIVE,
+		SS_HEAD_MSF	=> SS_CDC_HEAD,
+		SS_DBG		=> SS_CDC_DBG
 	);
+
+	--CDC buffer. Port A is the CDC read port. dpram_dif also exposes wren_a at
+	--8-bit width, so the savestate stream reads and writes it byte-wise there.
+	CDC_RAM_A_RD_M   <= SS_MEM_ADDR(13 downto 0) when SS_CDC_SEL = '1' else CDC_RAM_A_RD(13 downto 0);
+	CDC_RAM_DATA_A_M <= SS_MEM_WR_DATA(7 downto 0);
+	CDC_RAM_WE_A_M   <= SS_MEM_WR_EN when SS_CDC_SEL = '1' else '0';
 	
 	CDC_RAM : entity work.dpram_dif
 	generic map(14,8,13,16)
 	port map(
 		clock			=> CLK,
-		address_a	=> CDC_RAM_A_RD(13 downto 0),
+		address_a	=> CDC_RAM_A_RD_M,
+		data_a		=> CDC_RAM_DATA_A_M,
+		wren_a		=> CDC_RAM_WE_A_M,
 		q_a			=> CDC_RAM_DI,
 
 		address_b	=> CDC_RAM_A_WR(13 downto 1),
@@ -377,11 +505,29 @@ begin
 	);
 	
 	
+	--Audio is held while the savestate stream runs.
+	--PCM is not clocked by the sub-CPU enables, so it would keep advancing WRA
+	--during capture.
+	--A held CD_DAC FIFO fills and drops MCD_CDDA_WR_READY. Main then stops
+	--advancing the LBA, so its CD drive model stops too.
+	MCD_EN_AUDIO <= ENABLE and not SS_ACTIVE;
+
+	--Sub-device savestate bus fan-out. One write enable per device so a word
+	--destined for the PCM cannot also land in the CDC.
+	SS_CDC_WR_EN  <= SS_DEV_WR_EN when SS_DEV_SEL = "00" else '0';
+	SS_PCM_WR_EN  <= SS_DEV_WR_EN when SS_DEV_SEL = "01" else '0';
+	SS_CDDA_WR_EN <= SS_DEV_WR_EN when SS_DEV_SEL = "10" else '0';
+
+	SS_DEV_RD_DATA <= SS_CDC_RD_DATA  when SS_DEV_SEL = "00" else
+	                  SS_PCM_RD_DATA  when SS_DEV_SEL = "01" else
+	                  SS_CDDA_RD_DATA when SS_DEV_SEL = "10" else
+	                  (others => '0');
+
 	PCM : entity work.PCM
 	port map(
 		CLK   		=> CLK,
 		RST_N       => ERES_N,
-		ENABLE      => ENABLE,
+		ENABLE      => MCD_EN_AUDIO,
 		PALSW			=> PALSW,
 		
 		CLKEN			=> S68K_CE_F,
@@ -399,17 +545,30 @@ begin
 		RAM_ADDR_B	=> PCM_RAM_ADDR_B,
 		RAM_DI_B		=> PCM_RAM_DI_B,
 		
+		SS_ADDR		=> SS_DEV_ADDR,
+		SS_WR_DATA	=> SS_DEV_WR_DATA,
+		SS_WR_EN		=> SS_PCM_WR_EN,
+		SS_FREEZE	=> SS_ACTIVE,
+		SS_RD_DATA	=> SS_PCM_RD_DATA,
+
 		SL   			=> PCM_SL,
 		SR   			=> PCM_SR
 	);
+
+	--PCM wave RAM. Port A is the sub-CPU side and port B the playback read. The
+	--savestate takes port A. The PCM chip is held while frozen.
+	PCM_RAM_ADDR_A_M <= SS_MEM_ADDR(15 downto 0)  when SS_PCM_SEL = '1' else PCM_RAM_ADDR_A;
+	PCM_RAM_DO_A_M   <= SS_MEM_WR_DATA(7 downto 0) when SS_PCM_SEL = '1' else PCM_RAM_DO_A;
+	PCM_RAM_WE_A_M   <= SS_MEM_WR_EN               when SS_PCM_SEL = '1' else
+	                    '0'                        when SS_ACTIVE = '1'  else PCM_RAM_WE_A;
 	
 	PCM_RAM : entity work.dpram 
 	generic map(16)
 	port map(
 		clock			=> CLK,
-		address_a	=> PCM_RAM_ADDR_A,
-		data_a		=> PCM_RAM_DO_A,
-		wren_a		=> PCM_RAM_WE_A,
+		address_a	=> PCM_RAM_ADDR_A_M,
+		data_a		=> PCM_RAM_DO_A_M,
+		wren_a		=> PCM_RAM_WE_A_M,
 		q_a			=> PCM_RAM_DI_A,
 
 		address_b	=> PCM_RAM_ADDR_B,
@@ -420,7 +579,7 @@ begin
 	port map(
 		CLK   		=> CLK,
 		RST_N       => ERES_N,
-		ENABLE      => '1',
+		ENABLE      => not SS_ACTIVE,
 		
 		PALSW			=> PALSW,
 		
@@ -432,6 +591,12 @@ begin
 		
 		WR_READY		=> CDDA_WR_READY,
 		
+		SS_ADDR		=> SS_DEV_ADDR,
+		SS_WR_DATA	=> SS_DEV_WR_DATA,
+		SS_WR_EN		=> SS_CDDA_WR_EN,
+		SS_FREEZE	=> SS_ACTIVE,
+		SS_RD_DATA	=> SS_CDDA_RD_DATA,
+
 		SL   			=> CDDA_SL,
 		SR   			=> CDDA_SR
 	);
