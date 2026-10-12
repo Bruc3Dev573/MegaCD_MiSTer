@@ -567,6 +567,9 @@ begin
 						CDC_HRD  <= '0';
 						DMA_BYTE <= '0';
 						DMA_DAT  <= (others => '0');
+						--Restart the EDT edge detector from "idle", so a transfer that was open
+						--before the load cannot set the restored EDT on unfreeze.
+						OLD_CDC_DTEN_N <= '1';
 					when x"02" =>
 						HD <= SS_WR_DATA(15 downto 0);
 					when others => null;
@@ -672,6 +675,9 @@ begin
 		--w53 halt and reset handshake that cannot be derived
 		x"0000000" & "0" & MCD_RST_DONE & SUB_RST_EXEC & MAIN_RST_EXEC
 			when SS_ADDR = x"35" else
+		--w54 CDD command retransmit phase
+		"00000000000000" & std_logic_vector(CDD_FRAME_CNT)
+			when SS_ADDR = x"36" else
 		(others => '0');
 	
 	CDC_HRD_N <= not CDC_HRD;
@@ -1585,6 +1591,8 @@ begin
 						TIME_CLK_CNT <= unsigned(SS_WR_DATA(28 downto 20));
 					when x"35" =>
 						SUB_RST_EXEC <= SS_WR_DATA(1);
+					when x"36" =>
+						CDD_FRAME_CNT <= unsigned(SS_WR_DATA(17 downto 0));
 					when others =>
 						--CS and SBA are arrays indexed by address, so they are restored here.
 						if SS_ADDR(7 downto 2) = "000011" then

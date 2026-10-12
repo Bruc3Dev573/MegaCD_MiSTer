@@ -55,7 +55,7 @@ begin
 	RAM_DI <= pat(RAM_A_RD);
 
 	dut : entity work.CDC port map(
-		CLK => CLK, RESET_N => RESET_N, ENABLE => '1', CLKEN_P => '1', CLKEN_N => '0',
+		CLK => CLK, RESET_N => RESET_N, ENABLE => '1', PALSW => '0', CLKEN_P => '1', CLKEN_N => '0',
 		DI => DI, DO => DO, CS_N => CS_N, RS => RS, RD_N => RD_N, WR_N => WR_N, INT_N => INT_N,
 		HDO => HDO, HRD_N => HRD_N, DTEN_N => DTEN_N, WAIT_N => WAIT_N,
 		CD_DI => (others => '0'), CD_WR => '0',
