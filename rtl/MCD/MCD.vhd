@@ -89,6 +89,8 @@ architecture rtl of MCD is
 	signal S68K_RESET_N	: std_logic;
 	signal S68K_CE_F		: std_logic;
 	signal S68K_CE_R		: std_logic;
+	signal MCD_CLK_REF	: integer;
+	signal CLK50_EN		: std_logic;
 	
 	signal WORDRAM0_A   	: std_logic_vector(15 downto 0);
 	signal WORDRAM0_DI	: std_logic_vector(15 downto 0);
@@ -211,11 +213,25 @@ begin
 								  ASIC_DO(7 downto 0);
 	S68K_DI(15 downto 8) <= ASIC_DO(15 downto 8);
 	
+	-- 50 MHz rate enable for the gate array. clk_sys follows the console region, the Mega CD
+	-- clock does not, so the reference is chosen by region.
+	MCD_CLK_REF <= 53203423 when PALSW = '1' else 53693175;
+
+	CLK50_CEGen : entity work.CEGen
+	port map(
+		CLK   		=> CLK,
+		RST_N       => RST_N,
+		IN_CLK   	=> MCD_CLK_REF,
+		OUT_CLK   	=> 50000000,
+		CE   			=> CLK50_EN
+	);
+
 	ASIC : entity work.ASIC
 	port map(
 		CLK   			=> CLK,
 		RST_N       	=> RST_N,
 		ENABLE      	=> ENABLE,
+		CLK50_EN       => CLK50_EN,
 		
 		S68K_A   		=> S68K_A(23 downto 1),
 		S68K_DI   		=> S68K_DO,

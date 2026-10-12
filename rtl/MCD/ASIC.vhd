@@ -11,6 +11,7 @@ entity ASIC is
 		CLK				: in std_logic;
 		RST_N				: in std_logic;
 		ENABLE			: in std_logic;
+		CLK50_EN			: in std_logic;	-- 50 MHz rate enable (Mega CD clock); the sub-CPU runs at CLK50_EN/4
 		
 		S68K_A   		: in std_logic_vector(23 downto 1);
 		S68K_DI			: in std_logic_vector(15 downto 0);
@@ -301,14 +302,17 @@ begin
 	process( CLK )
 	begin
 		if rising_edge(CLK) then
-			if EN = '1' then
+			if EN = '1' and CLK50_EN = '1' then
 				CLK_CNT <= CLK_CNT + 1;
 			end if;
 		end if;
 	end process;
 	
-	CLK_12M_F <= EN when CLK_CNT = "01" else '0';
-	CLK_12M_R <= EN when CLK_CNT = "11" else '0';
+	-- The sub-CPU clock is the Mega CD's 50 MHz / 4 = 12.5 MHz. Stepping CLK_CNT on every
+	-- clk_sys edge ran the sub-CPU, the graphics engine and the CDC/PCM register timing at
+	-- 53.69 MHz / 4 = 13.42 MHz, 7.4% fast (Microcosm skipped its Start/Password menu).
+	CLK_12M_F <= EN and CLK50_EN when CLK_CNT = "01" else '0';
+	CLK_12M_R <= EN and CLK50_EN when CLK_CNT = "11" else '0';
 	
 	
 	--Reset
@@ -1245,7 +1249,7 @@ begin
 				
 				if CLK_12M_F = '1' then
 					TIME_CLK_CNT <= TIME_CLK_CNT + 1;
-					if TIME_CLK_CNT = "110011011" then
+					if TIME_CLK_CNT = "101111111" then	-- 384 clocks of 12.5 MHz = 30.72 us
 						TIME_CLK_CNT <= (others => '0');
 						
 						if SW_CLR = '1' then
