@@ -277,6 +277,8 @@ architecture rtl of ASIC is
 	signal DMNA_SET 					: std_logic;
 	signal MODE_REQ 					: std_logic;
 	signal DMA_ADDR_SET 				: std_logic;
+	signal DMA_EDT_CLR 				: std_logic;	-- EDT is cleared only by a FF8004 (DD) write
+	signal OLD_CDC_DTEN_N 			: std_logic;
 	signal VW_SET 						: std_logic;
 	signal TIME_CLK_CNT 				: unsigned(8 downto 0);
 	signal TIMER 						: unsigned(7 downto 0);
@@ -424,11 +426,11 @@ begin
 			DMA_BYTE <= '0';
 			DMA_RUN <= '0';
 			CDC_HRD <= '0';
+			OLD_CDC_DTEN_N <= '1';
 		elsif rising_edge(CLK) then
 			if EN = '1' then
 				if DMA_ADDR_SET = '1' then
 					DMA_ADDR <= DMAA(18 downto 3) & "00";
-					EDT <= '0';
 					DS <= DS_IDLE;
 					-- Do not leave the CDC host-read strobe asserted when a DMA is retargeted
 					-- in DS_CDC_READ while the CDC has not answered yet: the CDC then waits for
@@ -436,6 +438,17 @@ begin
 					-- lets the CDC finish the byte. Inert on the normal path: DS_IDLE asserts
 					-- the strobe again below on the same clock when it starts a byte.
 					CDC_HRD <= '0';
+				end if;
+				-- EDT and DSR are cleared only by a FF8004 (DD) write, not by FF800A.
+				if DMA_EDT_CLR = '1' then
+					EDT <= '0';
+					DSR <= '0';
+				end if;
+
+				-- EDT is a latch, set when a transfer completes (CDC DTEN 0->1).
+				OLD_CDC_DTEN_N <= CDC_DTEN_N;
+				if CDC_DTEN_N = '1' and OLD_CDC_DTEN_N = '0' then
+					EDT <= '1';
 				end if;
 				
 				case DS is
@@ -454,7 +467,6 @@ begin
 							if DMA_RUN = '1' and DD(2) = '1' then
 								DSR <= '0';
 							end if;
-							EDT <= '1';
 						end if;
 						
 					when DS_CDC_READ =>
@@ -1006,6 +1018,7 @@ begin
 			SBA <= (others => (others => '0'));
 			SUB_RST_EXEC <= '0';
 			DMA_ADDR_SET <= '0';
+			DMA_EDT_CLR <= '0';
 			VW_SET <= '0';
 			TIME_CLK_CNT <= (others => '0');
 			TIMER <= (others => '0');
@@ -1033,6 +1046,7 @@ begin
 				end if;
 				
 				DMA_ADDR_SET <= '0';
+				DMA_EDT_CLR <= '0';
 				VW_SET <= '0';
 				FD_WR <= '0';
 				
@@ -1107,6 +1121,7 @@ begin
 									DD <= S68K_DI(10 downto 8);
 									DMAA <= (others => '0');
 									DMA_ADDR_SET <= '1';
+									DMA_EDT_CLR <= '1';
 								end if;
 							when "0000011" => null;	--$FF8006 CDC register data (extern)
 							when "0000100" =>	null;	--$FF8008 CDC host data (read only)
