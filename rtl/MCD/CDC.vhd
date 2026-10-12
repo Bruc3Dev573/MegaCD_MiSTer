@@ -8,6 +8,7 @@ entity CDC is
 		CLK			: in std_logic;
 		RESET_N		: in std_logic;
 		ENABLE		: in std_logic;
+		PALSW			: in std_logic;					-- CLK is 53.20 MHz in PAL, 53.69 MHz in NTSC
 		CLKEN_P 		: in std_logic;
 		CLKEN_N 		: in std_logic;
 		
@@ -172,7 +173,15 @@ architecture rtl of CDC is
 	signal DEC_WR_EN : std_logic;
 	signal DEC_HEAD01 : std_logic_vector(15 downto 0);
 	signal DEC_HEAD23 : std_logic_vector(15 downto 0);
-	
+	-- 75 Hz decoder frame
+	signal FRAME_CNT : unsigned(19 downto 0);
+	signal DEC_FRAME : std_logic;
+	signal DEC_MID : std_logic;
+	signal FRAME_END : unsigned(19 downto 0);
+	signal FRAME_MID : unsigned(19 downto 0);
+	signal STREAM_SEEN : std_logic;
+	signal SECTOR_END : std_logic;
+	signal SECTOR_ACTIVE : std_logic;
 --	signal DECI_WAIT_CNT : unsigned(15 downto 0);
 --	signal DECI_SET : std_logic;
 	signal OLD_WRRQ : std_logic;
@@ -367,6 +376,8 @@ begin
 			
 			CD_WR_OLD <= '0';
 			WORD_CNT <= (others => '0');
+			SECTOR_ACTIVE <= '0';
+			SECTOR_END <= '0';
 			RAM_POS <= (others => '0');
 			DEC_POS <= (others => '0');
 			DEC_DAT <= (others => '0');
@@ -379,6 +390,25 @@ begin
 --			DECI_WAIT_CNT <= (others => '0');
 		elsif rising_edge(CLK) then
 			DEC_WR <= '0';
+			SECTOR_END <= '0';
+			-- With the decoder on, the LC8951 raises DECI every 75 Hz frame even when no sector
+			-- arrives (sync insertion, with SYIEN) and releases it about 40% into the frame.
+			-- A sector being streamed holds the insertion off, so the interrupt is not raised
+			-- before that sector's header is latched; the hold lasts one frame at most, so a
+			-- stream that stops part-way cannot block insertion for good.
+			if CTRL0(DECEN) = '0' then
+				IFSTAT(DECI) <= '1';
+				STAT3(VALST) <= '1';
+			elsif DEC_FRAME = '1' and CTRL1(SYIEN) = '1' and SECTOR_ACTIVE = '0' then
+				IFSTAT(DECI) <= '0';
+				STAT3(VALST) <= '0';
+			elsif DEC_MID = '1' then
+				IFSTAT(DECI) <= '1';
+				STAT3(VALST) <= '1';
+			end if;
+			if DEC_FRAME = '1' then
+				SECTOR_ACTIVE <= '0';
+			end if;
 			if EN = '1' then
 				if REG_WR = '1' then
 					case AR is
@@ -411,7 +441,11 @@ begin
 					if CD_WR = '1' and CD_WR_OLD = '0' then
 						DEC_DAT <= CD_DI;
 						DEC_POS <= RAM_POS;
-					
+						SECTOR_ACTIVE <= '1';
+						if WORD_CNT = 2352/2-1 then
+							SECTOR_ACTIVE <= '0';
+						end if;
+
 						WORD_CNT <= WORD_CNT + 1;
 						if WORD_CNT = 0 then
 --							DEC_WR_EN <= CTRL0(WRRQ);
@@ -438,6 +472,7 @@ begin
 --							DECI_SET <= '1';
 							IFSTAT(DECI) <= '0';
 							STAT3(VALST) <= '0';
+							SECTOR_END <= '1';
 						end if;
 						
 						if WORD_CNT = 2352/2-1 then
@@ -463,6 +498,7 @@ begin
 					end if;
 				else
 					WORD_CNT <= (others => '0');
+					SECTOR_ACTIVE <= '0';
 					RAM_POS <= (others => '0');
 				end if;
 			end if;
@@ -502,6 +538,42 @@ begin
 	RAM_A_WR <= DEC_ADDR(15 downto 1);
 	RAM_DO <= DEC_DAT;
 	RAM_WE <= DEC_WR and DEC_WR_EN and CTRL0(DECEN);
+
+	-- 75 Hz decoder frame timer, restarted by each sector that arrives from the drive.
+	-- Sync insertion runs only until the first sector after the decoder is enabled. Main
+	-- hands sectors over on a millisecond timer, so once the stream has started a missing
+	-- sector cannot be told from a late one, and an insertion carries no data: STAT0 still
+	-- reads CRC OK and the header is the previous sector's, which the BIOS takes for a real
+	-- sector (Crime Patrol hung on that).
+	FRAME_END <= to_unsigned(709378, 20) when PALSW = '1' else to_unsigned(715908, 20);
+	FRAME_MID <= to_unsigned(283751, 20) when PALSW = '1' else to_unsigned(286363, 20);
+	process( RESET_N, CLK )
+	begin
+		if RESET_N = '0' then
+			FRAME_CNT <= (others => '0');
+			STREAM_SEEN <= '0';
+			DEC_FRAME <= '0';
+			DEC_MID <= '0';
+		elsif rising_edge(CLK) then
+			DEC_FRAME <= '0';
+			DEC_MID <= '0';
+			if CTRL0(DECEN) = '0' then
+				FRAME_CNT <= (others => '0');
+				STREAM_SEEN <= '0';
+			elsif SECTOR_END = '1' then
+				FRAME_CNT <= (others => '0');
+				STREAM_SEEN <= '1';
+			elsif FRAME_CNT = FRAME_END then
+				FRAME_CNT <= (others => '0');
+				DEC_FRAME <= not STREAM_SEEN;
+			else
+				FRAME_CNT <= FRAME_CNT + 1;
+				if FRAME_CNT = FRAME_MID then
+					DEC_MID <= '1';
+				end if;
+			end if;
+		end if;
+	end process;
 
 	process( RESET_N, CLK )
 	begin
