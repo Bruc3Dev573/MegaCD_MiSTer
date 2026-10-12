@@ -1677,17 +1677,14 @@ begin
 						if DMA_PRG_RAM_SEL = '1' and SBRQ = '0' and SRES = '1' then
 							PRG_RAM_ADDR <= DMA_ADDR;
 							PRG_RAM_DO <= DMA_DAT;
-							if DMA_ADDR(18 downto 9) >= "00"&WP then
-								PRG_RAM_WRL <= '1';
-								PRG_RAM_WRH <= '1';
-								PRG_RAM_RD <= '0';
-								PRSS <= PRS_DMA_WAIT;
-							else
-								PRG_RAM_WRL <= '0';
-								PRG_RAM_WRH <= '0';
-								PRG_RAM_RD <= '0';
-								PRSS <= PRS_END;
-							end if;
+							-- The write-protect register guards PRG-RAM against CPU writes only; a CDC
+							-- DMA writes through. Gating it here also sent the DMA to PRS_END, which
+							-- waits for a sub-CPU DTACK that never comes and never clears PR_DMA_RUN:
+							-- the PRG-RAM port and the DMA hung for good.
+							PRG_RAM_WRL <= '1';
+							PRG_RAM_WRH <= '1';
+							PRG_RAM_RD <= '0';
+							PRSS <= PRS_DMA_WAIT;
 							PR_DMA_RUN <= '1';
 						elsif S68K_PRG_RAM_SEL = '1' and S68K_PRGRAM_DTACK_N = '1' then
 							PRG_RAM_ADDR <= S68K_A(18 downto 1);
