@@ -431,6 +431,8 @@ begin
 			if EN = '1' then
 				if DMA_ADDR_SET = '1' then
 					DMA_ADDR <= DMAA(18 downto 3) & "00";
+					-- Start every DMA word-aligned; an odd-length transfer leaves DMA_BYTE set.
+					DMA_BYTE <= '0';
 					DS <= DS_IDLE;
 					-- Do not leave the CDC host-read strobe asserted when a DMA is retargeted
 					-- in DS_CDC_READ while the CDC has not answered yet: the CDC then waits for
