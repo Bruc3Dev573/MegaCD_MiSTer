@@ -394,6 +394,12 @@ begin
 					DMA_ADDR <= DMAA(18 downto 3) & "00";
 					EDT <= '0';
 					DS <= DS_IDLE;
+					-- Do not leave the CDC host-read strobe asserted when a DMA is retargeted
+					-- in DS_CDC_READ while the CDC has not answered yet: the CDC then waits for
+					-- HRD_N to rise and DS_IDLE waits for the CDC, a mutual hang. Releasing it
+					-- lets the CDC finish the byte. Inert on the normal path: DS_IDLE asserts
+					-- the strobe again below on the same clock when it starts a byte.
+					CDC_HRD <= '0';
 				end if;
 				
 				case DS is
