@@ -592,7 +592,9 @@ begin
 							if EXT_UDS_N = '0' then
 								HIB(15 downto 8) <= EXT_VDI(15 downto 8);
 							end if;
-						when "00100" => null;	--$A12008 CDC host data (read only)
+						when "00100" =>			--$A12008 CDC host data
+							-- A write consumes a word from the CDC buffer, as a read does.
+							MAIN_CPU_CDC_READ <= '1';
 						when "00101" => null;	--$A1200A Reserved
 						when "00110" => null;	--$A1200C Stop watch (read only)
 						when "00111" =>			--$A1200E Communication flag
@@ -938,7 +940,9 @@ begin
 									DMA_EDT_CLR <= '1';
 								end if;
 							when "0000011" => null;	--$FF8006 CDC register data (extern)
-							when "0000100" =>	null;	--$FF8008 CDC host data (read only)
+							when "0000100" =>			--$FF8008 CDC host data
+								-- A write consumes a word from the CDC buffer, as a read does.
+								SUB_CPU_CDC_READ <= '1';
 							when "0000101" =>			--$FF800A CDC DMA address
 								DMAA(18 downto 3) <= S68K_DI(15 downto 0);
 								DMA_ADDR_SET <= '1';
@@ -1140,7 +1144,9 @@ begin
 								end if;
 							when "0000010" =>			--$FF8004 CDC Mode/CDC register address (extern)
 								S68K_REG_DO <= EDT & DSR & "000" & DD & x"00";
-							when "0000011" => null;	--$FF8006 CDC register data (extern)
+							when "0000011" =>			--$FF8006 CDC register data (extern)
+								-- The CDC drives only the low byte; the high byte must read 0.
+								S68K_REG_DO <= (others => '0');
 							when "0000100" =>			--$FF8008 CDC host data
 								S68K_REG_DO <= HD;
 								SUB_CPU_CDC_READ <= '1';

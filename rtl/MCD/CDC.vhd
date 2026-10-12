@@ -247,14 +247,17 @@ begin
 						DO <= x"0" & AR;
 					else
 						case AR is
-							when x"0" =>			--R0
-								
+							when x"0" =>			--R0 COMIN
+								-- No command input is wired on the Mega CD; the register reads back all-ones.
+								-- After STAT3 the address wraps to 0, so a second data read lands here.
+								DO <= x"FF";
 							when x"1" =>			--R1 IFSTAT
 								DO <= IFSTAT;	
 							when x"2" =>			--R2 DBCL
 								DO <= DBC(7 downto 0);
 							when x"3" =>			--R3 DBCH
-								DO <= DBC(15 downto 8);
+								-- DBC is 12 bits on the LC8951, so DBCH reads back only bits 11:8.
+								DO <= x"0" & DBC(11 downto 8);
 							when x"4" =>			--R4 HEAD0
 								DO <= HEAD0;
 							when x"5" =>			--R5 HEAD1
@@ -281,9 +284,10 @@ begin
 								DO <= STAT3;
 							when others => null;
 						end case;
-					end if;
-					if AR /= x"0" then
-						AR <= std_logic_vector( unsigned(AR) + 1 );
+						-- Only a data-port access auto-increments AR.
+						if AR /= x"0" then
+							AR <= std_logic_vector( unsigned(AR) + 1 );
+						end if;
 					end if;
 				end if;
 			end if;
