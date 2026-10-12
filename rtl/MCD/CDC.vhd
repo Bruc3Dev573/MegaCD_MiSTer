@@ -224,6 +224,7 @@ begin
 		std_logic_vector(DEC_POS) & std_logic_vector(RAM_POS)
 		                                                 when SS_ADDR = "000111" else
 		"00000000000000000000000" & FIFO_DATA0           when SS_ADDR = "001000" else
+		"0000000000000000000000000000000" & not STREAM_SEEN when SS_ADDR = "001001" else
 		(others => '0');
 	
 	process( RESET_N, CLK )
@@ -401,24 +402,28 @@ begin
 --			DECI_WAIT_CNT <= (others => '0');
 		elsif rising_edge(CLK) then
 			DEC_WR <= '0';
-			SECTOR_END <= '0';
 			-- With the decoder on, the LC8951 raises DECI every 75 Hz frame even when no sector
 			-- arrives (sync insertion, with SYIEN) and releases it about 40% into the frame.
 			-- A sector being streamed holds the insertion off, so the interrupt is not raised
 			-- before that sector's header is latched; the hold lasts one frame at most, so a
 			-- stream that stops part-way cannot block insertion for good.
-			if CTRL0(DECEN) = '0' then
-				IFSTAT(DECI) <= '1';
-				STAT3(VALST) <= '1';
-			elsif DEC_FRAME = '1' and CTRL1(SYIEN) = '1' and SECTOR_ACTIVE = '0' then
-				IFSTAT(DECI) <= '0';
-				STAT3(VALST) <= '0';
-			elsif DEC_MID = '1' then
-				IFSTAT(DECI) <= '1';
-				STAT3(VALST) <= '1';
-			end if;
-			if DEC_FRAME = '1' then
-				SECTOR_ACTIVE <= '0';
+			-- The frame timer and its pulses stop with the machine, so DECI and VALST hold
+			-- still while a state is captured or restored.
+			if SS_FREEZE = '0' then
+				SECTOR_END <= '0';
+				if CTRL0(DECEN) = '0' then
+					IFSTAT(DECI) <= '1';
+					STAT3(VALST) <= '1';
+				elsif DEC_FRAME = '1' and CTRL1(SYIEN) = '1' and SECTOR_ACTIVE = '0' then
+					IFSTAT(DECI) <= '0';
+					STAT3(VALST) <= '0';
+				elsif DEC_MID = '1' then
+					IFSTAT(DECI) <= '1';
+					STAT3(VALST) <= '1';
+				end if;
+				if DEC_FRAME = '1' then
+					SECTOR_ACTIVE <= '0';
+				end if;
 			end if;
 			if EN = '1' then
 				if REG_WR = '1' then
@@ -517,7 +522,10 @@ begin
 			--Savestate restore for the sector decoder state.
 			if SS_WR_EN = '1' then
 				case SS_ADDR is
-					when "000000" => IFSTAT(DECI) <= SS_WR_DATA(16 + DECI);
+					when "000000" =>
+						IFSTAT(DECI) <= SS_WR_DATA(16 + DECI);
+						SECTOR_ACTIVE <= '0';
+						SECTOR_END <= '0';
 					when "000001" => STAT3(VALST) <= SS_WR_DATA(24 + VALST);
 					when "000011" =>
 						PT <= SS_WR_DATA(15 downto 0);
@@ -558,6 +566,10 @@ begin
 	-- sector (Crime Patrol hung on that).
 	FRAME_END <= to_unsigned(709378, 20) when PALSW = '1' else to_unsigned(715908, 20);
 	FRAME_MID <= to_unsigned(283751, 20) when PALSW = '1' else to_unsigned(286363, 20);
+	--The frame timer stops while frozen and restarts from zero after a save or a load.
+	--Word 9 bit 0 saves "no sector yet" (not STREAM_SEEN), so a load in the middle of a
+	--stream inserts no sync while Main restarts the sectors, and a state from an older
+	--build, where the word reads zero, loads as a running stream.
 	process( RESET_N, CLK )
 	begin
 		if RESET_N = '0' then
@@ -568,7 +580,12 @@ begin
 		elsif rising_edge(CLK) then
 			DEC_FRAME <= '0';
 			DEC_MID <= '0';
-			if CTRL0(DECEN) = '0' then
+			if SS_WR_EN = '1' and SS_ADDR = "001001" then
+				FRAME_CNT <= (others => '0');
+				STREAM_SEEN <= not SS_WR_DATA(0);
+			elsif SS_FREEZE = '1' then
+				FRAME_CNT <= (others => '0');
+			elsif CTRL0(DECEN) = '0' then
 				FRAME_CNT <= (others => '0');
 				STREAM_SEEN <= '0';
 			elsif SECTOR_END = '1' then

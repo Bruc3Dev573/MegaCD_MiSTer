@@ -131,7 +131,7 @@ begin
     ---------------------------------------------------------------------------
     u_asic : entity work.ASIC
         port map (
-            CLK => CLK,  RST_N => RST_N,  ENABLE => '1',
+            CLK => CLK,  RST_N => RST_N,  ENABLE => '1',  CLK50_EN => '1',
             S68K_A      => (others => '0'), S68K_DI     => (others => '0'),
             S68K_DO     => s68k_do,         S68K_AS_N   => '1',
             S68K_RNW    => '1',             S68K_UDS_N  => '1',
@@ -186,7 +186,7 @@ begin
     u_cdc : entity work.CDC
         port map (
             CLK     => CLK,  RESET_N => RST_N,
-            ENABLE  => '1',  CLKEN_P => '1',  CLKEN_N => '1',
+            ENABLE  => '1',  PALSW => '0',  CLKEN_P => '1',  CLKEN_N => '1',
             DI      => (others => '0'),  DO  => cdc_do,
             CS_N    => '1',  RS => '0',  RD_N => '1',  WR_N => '1',
             INT_N   => cdc_int_n_out,
