@@ -275,6 +275,7 @@ architecture rtl of ASIC is
 	signal HOCK_OLD 					: std_logic;
 	signal CD_SC_WR_OLD 				: std_logic;
 	signal CDD_STAT_RECEIVED 		: std_logic;
+	signal CDD_FRAME_CNT				: unsigned(17 downto 0);
 	signal SC_CNT 						: unsigned(5 downto 0);
 	signal CDC_HRD 					: std_logic;
 	signal MAIN_CPU_CDC_READ 		: std_logic;
@@ -835,6 +836,7 @@ begin
 			INT_PEND(6) <= '0';
 			
 			CDD_STAT_RECEIVED <= '0';
+			CDD_FRAME_CNT <= (others => '0');
 		elsif rising_edge(CLK) then
 			if EN = '1' then
 				SUB_RST_EXEC <= '0';
@@ -872,7 +874,24 @@ begin
 					INT_PEND(4) <= '1';
 				end if;
 				
+				-- While HOCK is set the gate array clocks its command registers out to the drive
+				-- every 75 Hz frame, whether or not software wrote a new command. Hand the command
+				-- over on HOCK rising and then every 166667 ticks of 12.5 MHz, restarting the
+				-- count on each software write so a written command is not sent twice.
 				CDD_SEND <= '0';
+				if HOCK = '0' then
+					CDD_FRAME_CNT <= (others => '0');
+				elsif HOCK_OLD = '0' then
+					CDD_SEND <= '1';
+					CDD_FRAME_CNT <= (others => '0');
+				elsif CLK_12M_F = '1' then
+					if CDD_FRAME_CNT = 166666 then
+						CDD_SEND <= '1';
+						CDD_FRAME_CNT <= (others => '0');
+					else
+						CDD_FRAME_CNT <= CDD_FRAME_CNT + 1;
+					end if;
+				end if;
 				
 				if SUB_CPU_CDC_READ = '1' and DS = DS_IDLE then
 					SUB_CPU_CDC_READ <= '0';
@@ -1025,6 +1044,7 @@ begin
 								if S68K_LDS_N = '0' then
 									CDDC(39 downto 36) <= S68K_DI(3 downto 0);
 									CDD_SEND <= HOCK;
+									CDD_FRAME_CNT <= (others => '0');
 								end if;
 								if S68K_UDS_N = '0' then
 									CDDC(35 downto 32) <= S68K_DI(11 downto 8);
