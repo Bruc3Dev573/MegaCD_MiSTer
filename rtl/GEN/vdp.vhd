@@ -398,6 +398,7 @@ signal V_INT_POS       : std_logic_vector(8 downto 0);
 
 signal V_DISP_HEIGHT_R : std_logic_vector(8 downto 0);
 signal V30_R           : std_logic;
+signal H40_R           : std_logic;
 
 ----------------------------------------------------------------
 -- VRAM CONTROLLER
@@ -2789,6 +2790,9 @@ V_DISP_HEIGHT_R <= conv_std_logic_vector(V_DISP_HEIGHT_V30, 9) when V30_R ='1'
 
 process( CLK )
 	variable V30prev : std_logic;
+	variable H40_CNT : integer range 0 to 3;
+	variable DE_CNT  : integer range 0 to 319;
+	variable DE_DONE : boolean;
 begin
 	if rising_edge(CLK) then
 		CE_PIX <= '0';
@@ -2804,12 +2808,45 @@ begin
 				V30prev := '1';
 			end if;
 
+			-- Every active line of a frame is exactly as wide as the frame, 256 or 320 pixels,
+			-- so that the HDMI scaler, which takes the width from the lines it receives, never
+			-- sees two widths. The frame takes the mode at the start of its first line, once
+			-- that mode has held for four frames in a row. Ultraverse Prime switches to H40 in
+			-- the middle of a line below its H32 playfield and back in the vertical blank,
+			-- sometimes only after the next frame has started; the scaler showed those frames
+			-- garbled. A genuine mode change shows up four frames later.
+			if HV_HCNT = HBLANK_END and HV_VCNT = 0 then
+				if H40 = H40_R then
+					H40_CNT := 0;
+				elsif H40_CNT = 3 then
+					H40_R <= H40;
+					H40_CNT := 0;
+				else
+					H40_CNT := H40_CNT + 1;
+				end if;
+			end if;
+
 			CE_PIX <= '1';
 			if BORDER_EN = '0' then
-				if ((HV_HCNT - HBLANK_END - HBORDER_LEFT) >= H_DISP_WIDTH) then
-					HBL <= '1';
-				else
+				-- The active area opens once per line, where it starts in the current mode, and
+				-- stays open for the frame's width even if the mode changes within the line.
+				if DE_CNT /= 0 then
+					DE_CNT := DE_CNT - 1;
 					HBL <= '0';
+				elsif not DE_DONE and (HV_HCNT - HBLANK_END - HBORDER_LEFT) < H_DISP_WIDTH then
+					if H40_R = '1' then
+						DE_CNT := H_DISP_WIDTH_H40 - 1;
+					else
+						DE_CNT := H_DISP_WIDTH_H32 - 1;
+					end if;
+					DE_DONE := true;
+					HBL <= '0';
+				else
+					HBL <= '1';
+				end if;
+				-- Re-arm in the blanking at the start of the next line (counter wrapped past 384).
+				if DE_CNT = 0 and HV_HCNT(8 downto 7) = "11" then
+					DE_DONE := false;
 				end if;
 
 				if HV_VCNT < V_DISP_HEIGHT_R then
