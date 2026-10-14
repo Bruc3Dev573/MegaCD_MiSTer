@@ -119,10 +119,7 @@ architecture rtl of CDC is
 	
 	signal EN : std_logic;
 	
-	-- The LC8951 address register is 5 bits; only 0..15 select a register.
-	signal AR : std_logic_vector(4 downto 0);
-	-- Write-side decode index: AR >= 16 maps to R14, which no write decode implements.
-	signal ARD : std_logic_vector(3 downto 0);
+	signal AR : std_logic_vector(3 downto 0);
 	signal IFCTRL : std_logic_vector(7 downto 0);
 	signal IFSTAT : std_logic_vector(7 downto 0) := x"FF";
 	signal DBC : std_logic_vector(15 downto 0);
@@ -191,8 +188,6 @@ architecture rtl of CDC is
 	
 begin
 
-	ARD <= AR(3 downto 0) when AR(4) = '0' else x"E";
-
 	--Frozen with the rest of the machine. The restore writes below are outside
 	--the EN gates because they happen while the machine is frozen.
 	EN <= ENABLE and (CLKEN_N or CLKEN_P) and not SS_FREEZE;
@@ -212,7 +207,7 @@ begin
 	          "0" & IFSTAT(DECI) & std_logic_vector(WORD_CNT);
 
 	SS_RD_DATA <=
-		CTRL0 & IFSTAT & IFCTRL & "000" & AR             when SS_ADDR = "000000" else
+		CTRL0 & IFSTAT & IFCTRL & "0000" & AR            when SS_ADDR = "000000" else
 		STAT3 & STAT2 & STAT0 & CTRL1                    when SS_ADDR = "000001" else
 		DAC & DBC                                        when SS_ADDR = "000010" else
 		WA & PT                                          when SS_ADDR = "000011" else
@@ -267,9 +262,9 @@ begin
 			if EN = '1' then
 				if CS_N = '0' and WR_F = '1' then
 					if RS = '0' then
-						AR <= DI(4 downto 0);
+						AR <= DI(3 downto 0);
 					else
-						case ARD is
+						case AR is
 							when x"0" =>			--R0
 							when x"1" =>			--R1 IFCTRL
 								IFCTRL <= DI;	
@@ -296,17 +291,19 @@ begin
 								CTRL1 <= (others => '0');
 							when others => null;
 						end case;
-						if AR /= "00000" then
+						if AR /= x"0" then
 							AR <= std_logic_vector( unsigned(AR) + 1 );
 						end if;
 					end if;
 				elsif CS_N = '0' and RD_F = '1' then
 					if RS = '0' then
-						DO <= "000" & AR;
+						DO <= x"0" & AR;
 					else
-						case AR(3 downto 0) is
-							when x"0" =>			--R0
-								
+						case AR is
+							when x"0" =>			--R0 COMIN
+								-- No command input is wired on the Mega CD; the register reads back all-ones.
+								-- After STAT3 the address wraps to 0, so a second data read lands here.
+								DO <= x"FF";
 							when x"1" =>			--R1 IFSTAT
 								DO <= IFSTAT;	
 							when x"2" =>			--R2 DBCL
@@ -340,12 +337,8 @@ begin
 								DO <= STAT3;
 							when others => null;
 						end case;
-						-- AR >= 16 selects no register and reads back all-ones.
-						if AR(4) = '1' then
-							DO <= x"FF";
-						end if;
 						-- Only a data-port access auto-increments AR.
-						if AR /= "00000" then
+						if AR /= x"0" then
 							AR <= std_logic_vector( unsigned(AR) + 1 );
 						end if;
 					end if;
@@ -358,7 +351,7 @@ begin
 			if SS_WR_EN = '1' then
 				case SS_ADDR is
 					when "000000" =>
-						AR     <= SS_WR_DATA(4 downto 0);
+						AR     <= SS_WR_DATA(3 downto 0);
 						IFCTRL <= SS_WR_DATA(15 downto 8);
 						CTRL0  <= SS_WR_DATA(31 downto 24);
 					when "000001" =>
@@ -427,7 +420,7 @@ begin
 			end if;
 			if EN = '1' then
 				if REG_WR = '1' then
-					case ARD is
+					case AR is
 						when x"8" =>			--R8 WAL
 							WA(7 downto 0) <= DI;
 						when x"9" =>			--R9 WAH
@@ -442,7 +435,7 @@ begin
 						when others => null;
 					end case;
 				elsif REG_RD = '1' then
-					case ARD is
+					case AR is
 						when x"F" =>			--R15 STAT3
 							IFSTAT(DECI) <= '1';
 							STAT3(VALST) <= '1';
@@ -644,7 +637,7 @@ begin
 		elsif rising_edge(CLK) then
 			if EN = '1' then
 				if REG_WR = '1' then
-					case ARD is
+					case AR is
 						when x"2" =>			--R2 DBCL
 							DBC(7 downto 0) <= DI;
 						when x"3" =>			--R3 DBCH
@@ -669,7 +662,7 @@ begin
 				end if;
 				
 				
-				if (REG_WR = '1' and ARD = x"F") or (REG_WR = '1' and ARD = x"1" and DI(DOUTEN) = '0') then
+				if (REG_WR = '1' and AR = x"F") or (REG_WR = '1' and AR = x"1" and DI(DOUTEN) = '0') then
 					IFSTAT(DTBSY) <= '1';
 					IFSTAT(DTEN) <= '1';
 					IFSTAT(DTEI) <= '1';
@@ -679,7 +672,7 @@ begin
 					FIFO_DATA0(8) <= '0';
 --					FIFO_DATA1(8) <= '0';
 					TS <= TS_IDLE;
-				elsif REG_WR = '1' and ARD = x"6" then
+				elsif REG_WR = '1' and AR = x"6" then
 					if IFCTRL(DOUTEN) = '1' then
 						IFSTAT(DTBSY) <= '0';
 --						IFSTAT(DTEN) <= '0';
