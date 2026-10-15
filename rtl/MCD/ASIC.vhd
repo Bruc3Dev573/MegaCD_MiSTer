@@ -213,6 +213,8 @@ architecture rtl of ASIC is
 	signal DMA_DAT 					: std_logic_vector(15 downto 0);
 	signal DMA_BYTE 					: std_logic;
 	signal DMA_RUN 					: std_logic;
+	signal DMA_WRAM_WAIT 			: std_logic;
+	signal DMA_WORD_PEND 			: std_logic;
 	signal PR_DMA_RUN 				: std_logic;
 	signal WR_DMA_RUN 				: std_logic;
 	signal PCM_DMA_RUN 				: std_logic;
@@ -553,10 +555,14 @@ begin
 			end if;
 
 			--Savestate restore for the CDC transfer registers this process owns.
-			--DS is not saved. Capture happens with DS at DS_IDLE, so restore sets it to DS_IDLE.
-			--DMA_BYTE and DMA_DAT hold a half-assembled host-read word and are not saved.
-			--Capture always has DMA_BYTE at 0, but the running machine may not. Clearing it
-			--keeps the first restored CDC byte in DMA_DAT bits 15 to 8.
+			--w0 and w2 are restored first. They return the transfer to DS_IDLE with no
+			--half-assembled word, which is what an image without w55 gets.
+			--w55 and w56 hold the transfer in flight: the running address, the word read
+			--from the CDC and not yet written, DMA_BYTE and DMA_RUN. A word waiting in
+			--DS_WRITE or DS_WRITE_WAIT restarts in DS_WRITE: the write has not completed
+			--(DMA_ADDR moves on only when it does) and repeating it is harmless.
+			--DS_CDC_READ restarts in DS_IDLE with CDC_HRD low, so the CDC, restored with
+			--its staged byte, delivers the same byte again.
 			if SS_WR_EN = '1' then
 				case SS_ADDR is
 					when x"00" =>
@@ -572,6 +578,18 @@ begin
 						OLD_CDC_DTEN_N <= '1';
 					when x"02" =>
 						HD <= SS_WR_DATA(15 downto 0);
+					when x"37" =>
+						--Bit 31 marks an image that has this word.
+						if SS_WR_DATA(31) = '1' then
+							DMA_ADDR <= SS_WR_DATA(17 downto 0);
+							if SS_WR_DATA(18) = '1' then
+								DS <= DS_WRITE;
+							end if;
+							DMA_RUN  <= SS_WR_DATA(19);
+							DMA_BYTE <= SS_WR_DATA(20);
+						end if;
+					when x"38" =>
+						DMA_DAT <= SS_WR_DATA(15 downto 0);
 					when others => null;
 				end case;
 			end if;
@@ -595,14 +613,21 @@ begin
 	                             PRSS = PRS_REFRESH or PRSS = PRS_REFRESH_END)
 	                   else '1';
 
-	SS_QUIET_BITS(0)  <= '1' when DS = DS_IDLE and DMA_BYTE = '0' else '0';
+	--A DMA to Word RAM holding a word in DS_WRITE while Word RAM is in 2M mode and
+	--belongs to the main CPU cannot progress until the main CPU returns Word RAM,
+	--which it cannot do while frozen. The word, the address and the CDC side (TS_SEND_WAIT
+	--with its next byte staged) are all saved, so this state is captured as it is.
+	DMA_WRAM_WAIT <= '1' when DS = DS_WRITE and DD = "111" and MODE = '0' and RET0 = '1' else '0';
+	DMA_WORD_PEND <= '1' when DS = DS_WRITE or DS = DS_WRITE_WAIT else '0';
+
+	SS_QUIET_BITS(0)  <= '1' when (DS = DS_IDLE and DMA_BYTE = '0') or DMA_WRAM_WAIT = '1' else '0';
 	SS_QUIET_BITS(1)  <= '1' when GS   = GS_IDLE   else '0';
 	SS_QUIET_BITS(2)  <= '1' when WR0A = WRA_IDLE  else '0';
 	SS_QUIET_BITS(3)  <= '1' when WR1A = WRA_IDLE  else '0';
 	SS_QUIET_BITS(4)  <= '1' when PCMA = PCMA_IDLE else '0';
 	SS_QUIET_BITS(5)  <= '1' when HS   = HS_IDLE   else '0';
 	SS_QUIET_BITS(6)  <= not PRG_ACCESS_BUSY;
-	SS_QUIET_BITS(7)  <= not DMA_RUN;
+	SS_QUIET_BITS(7)  <= not DMA_RUN or DMA_WRAM_WAIT;
 	SS_QUIET_BITS(8)  <= not PR_DMA_RUN;
 	SS_QUIET_BITS(9)  <= not WR_DMA_RUN;
 	SS_QUIET_BITS(10) <= not PCM_DMA_RUN;
@@ -610,11 +635,12 @@ begin
 	SS_QUIET_BITS(13 downto 11) <= (others => '0');
 
 	--Both CPUs must finish Gate Array register cycles before capture.
-	SS_QUIET <= '1' when DS = DS_IDLE and DMA_BYTE = '0' and GS = GS_IDLE and
+	SS_QUIET <= '1' when ((DS = DS_IDLE and DMA_BYTE = '0' and DMA_RUN = '0') or DMA_WRAM_WAIT = '1') and
+	                     GS = GS_IDLE and
 	                     WR0A = WRA_IDLE and WR1A = WRA_IDLE and
 	                     PCMA = PCMA_IDLE and HS = HS_IDLE and
 	                     PRG_ACCESS_BUSY = '0' and
-	                     DMA_RUN = '0' and PR_DMA_RUN = '0' and
+	                     PR_DMA_RUN = '0' and
 	                     WR_DMA_RUN = '0' and PCM_DMA_RUN = '0' and
 	                     M68K_GA_SEL = '0' and S68K_GA_SEL = '0'
 	            else '0';
@@ -678,6 +704,13 @@ begin
 		--w54 CDD command retransmit phase
 		"00000000000000" & std_logic_vector(CDD_FRAME_CNT)
 			when SS_ADDR = x"36" else
+		--w55 CDC DMA transfer in flight: valid mark, DMA_BYTE, DMA_RUN, a word waiting
+		--to be written (DS_WRITE or DS_WRITE_WAIT), and the running address
+		"1" & "0000000000" & DMA_BYTE & DMA_RUN & DMA_WORD_PEND & DMA_ADDR
+			when SS_ADDR = x"37" else
+		--w56 CDC DMA word read from the CDC and not yet written
+		x"0000" & DMA_DAT
+			when SS_ADDR = x"38" else
 		(others => '0');
 	
 	CDC_HRD_N <= not CDC_HRD;
