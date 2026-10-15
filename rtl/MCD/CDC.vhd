@@ -326,13 +326,18 @@ begin
 			-- arrives (sync insertion, with SYIEN) and releases it about 40% into the frame.
 			-- A sector being streamed holds the insertion off, so the interrupt is not raised
 			-- before that sector's header is latched; the hold lasts one frame at most, so a
-			-- stream that stops part-way cannot block insertion for good.
+			-- stream that stops part-way cannot block insertion for good. A frame without
+			-- data reads header 01 80 00 60, not the header of the previous sector.
 			if CTRL0(DECEN) = '0' then
 				IFSTAT(DECI) <= '1';
 				STAT3(VALST) <= '1';
 			elsif DEC_FRAME = '1' and CTRL1(SYIEN) = '1' and SECTOR_ACTIVE = '0' then
 				IFSTAT(DECI) <= '0';
 				STAT3(VALST) <= '0';
+				HEAD0 <= x"01";
+				HEAD1 <= x"80";
+				HEAD2 <= x"00";
+				HEAD3 <= x"60";
 			elsif DEC_MID = '1' then
 				IFSTAT(DECI) <= '1';
 				STAT3(VALST) <= '1';
@@ -443,9 +448,8 @@ begin
 	-- 75 Hz decoder frame timer, restarted by each sector that arrives from the drive.
 	-- Sync insertion runs only until the first sector after the decoder is enabled. Main
 	-- hands sectors over on a millisecond timer, so once the stream has started a missing
-	-- sector cannot be told from a late one, and an insertion carries no data: STAT0 still
-	-- reads CRC OK and the header is the previous sector's, which the BIOS takes for a real
-	-- sector (Crime Patrol hung on that).
+	-- sector cannot be told from a late one, and an insertion carries no data (Crime Patrol
+	-- hung when an insertion in the stream still read the previous sector's header).
 	FRAME_END <= to_unsigned(709378, 20) when PALSW = '1' else to_unsigned(715908, 20);
 	FRAME_MID <= to_unsigned(283751, 20) when PALSW = '1' else to_unsigned(286363, 20);
 	process( RESET_N, CLK )
