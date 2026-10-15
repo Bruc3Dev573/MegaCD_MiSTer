@@ -165,8 +165,6 @@ architecture rtl of CDC is
 	
 	signal CD_WR_OLD : std_logic;
 	signal WORD_CNT : unsigned(10 downto 0);
-	signal RAM_POS : unsigned(11 downto 0);
-	signal DEC_POS : unsigned(11 downto 0);
 	signal DEC_ADDR : std_logic_vector(15 downto 0);
 	signal DEC_DAT : std_logic_vector(15 downto 0);
 	signal DEC_WR : std_logic;
@@ -215,8 +213,11 @@ begin
 		DEC_HEAD23 & DEC_HEAD01                          when SS_ADDR = "000101" else
 		"0" & CD_WR_OLD & DT_EN & DEC_WR & DEC_WR_EN &
 		std_logic_vector(WORD_CNT) & DEC_DAT             when SS_ADDR = "000110" else
-		"00000" & OLD_WRRQ & OLD_RD_N & OLD_WR_N &
-		std_logic_vector(DEC_POS) & std_logic_vector(RAM_POS)
+		--Bits 23..0 held the decoder buffer offsets, which are now derived from PT and
+		--WORD_CNT. They read 0 and an older image's values there are ignored. DEC_ADDR
+		--is not saved: it is latched with each word and used only by the write pulse
+		--of the next clock, and DEC_WR is cleared on every clock, also while frozen.
+		"00000" & OLD_WRRQ & OLD_RD_N & OLD_WR_N & x"000000"
 		                                                 when SS_ADDR = "000111" else
 		"00000000000000000000000" & FIFO_DATA0           when SS_ADDR = "001000" else
 		"0000000000000000000000000000000" & not STREAM_SEEN when SS_ADDR = "001001" else
@@ -383,8 +384,7 @@ begin
 			WORD_CNT <= (others => '0');
 			SECTOR_ACTIVE <= '0';
 			SECTOR_END <= '0';
-			RAM_POS <= (others => '0');
-			DEC_POS <= (others => '0');
+			DEC_ADDR <= (others => '0');
 			DEC_DAT <= (others => '0');
 			DEC_WR <= '0';
 			DEC_WR_EN <= '0';
@@ -449,34 +449,36 @@ begin
 					CD_WR_OLD <= CD_WR;
 					if CD_WR = '1' and CD_WR_OLD = '0' then
 						DEC_DAT <= CD_DI;
-						DEC_POS <= RAM_POS;
+						-- Every word of the sector goes to the buffer. A buffer block runs from the
+						-- header to the sync of the next sector: header, user data and EDC/ECC go from
+						-- the block address on and the 12 sync bytes to the block tail, where the next
+						-- data sector would put the same pattern, so the whole block is in place when
+						-- DECI is raised. The address is taken here because PT moves on with the last
+						-- word.
+						if WORD_CNT < 12/2 then
+							DEC_ADDR <= std_logic_vector( unsigned(PT) + 2352 + 2340 + (WORD_CNT & '0') );
+						else
+							DEC_ADDR <= std_logic_vector( unsigned(PT) + 2352 - 12 + (WORD_CNT & '0') );
+						end if;
+						DEC_WR <= '1';
 						SECTOR_ACTIVE <= '1';
 						if WORD_CNT = 2352/2-1 then
 							SECTOR_ACTIVE <= '0';
 						end if;
 
 						WORD_CNT <= WORD_CNT + 1;
-						if WORD_CNT = 0 then
---							DEC_WR_EN <= CTRL0(WRRQ);
-						elsif WORD_CNT = 12/2 then
+						if WORD_CNT = 12/2 then
 							DEC_HEAD01 <= CD_DI;
 							if CTRL0(WRRQ) = '0' then
 								HEAD0 <= CD_DI(7 downto 0);
 								HEAD1 <= CD_DI(15 downto 8);
 							end if;
-							DEC_WR <= '1';
-							RAM_POS <= RAM_POS + 2;
 						elsif WORD_CNT = 14/2 then
 							DEC_HEAD23 <= CD_DI;
 							if CTRL0(WRRQ) = '0' then
 								HEAD2 <= CD_DI(7 downto 0);
 								HEAD3 <= CD_DI(15 downto 8);
 							end if;
-							DEC_WR <= '1';
-							RAM_POS <= RAM_POS + 2;
-						elsif WORD_CNT >= 16/2 and WORD_CNT <= (16+2048)/2-1 then
-							DEC_WR <= '1';
-							RAM_POS <= RAM_POS + 2;
 						elsif WORD_CNT = 2352/2-1 then
 --							DECI_SET <= '1';
 							IFSTAT(DECI) <= '0';
@@ -486,7 +488,6 @@ begin
 						
 						if WORD_CNT = 2352/2-1 then
 							WORD_CNT <= (others => '0');
-							RAM_POS <= (others => '0');
 --							DEC_WR_EN <= CTRL0(WRRQ);
 						end if;
 --						if CTRL0(WRRQ) = '0' then
@@ -508,7 +509,6 @@ begin
 				else
 					WORD_CNT <= (others => '0');
 					SECTOR_ACTIVE <= '0';
-					RAM_POS <= (others => '0');
 				end if;
 			end if;
 
@@ -537,16 +537,12 @@ begin
 						DEC_WR_EN  <= SS_WR_DATA(27);
 						DEC_WR     <= SS_WR_DATA(28);
 						CD_WR_OLD  <= SS_WR_DATA(30);
-					when "000111" =>
-						RAM_POS <= unsigned(SS_WR_DATA(11 downto 0));
-						DEC_POS <= unsigned(SS_WR_DATA(23 downto 12));
 					when others => null;
 				end case;
 			end if;
 		end if;
 	end process;
 	
-	DEC_ADDR <= std_logic_vector( unsigned(PT) + 2352 + DEC_POS );
 	RAM_A_WR <= DEC_ADDR(15 downto 1);
 	RAM_DO <= DEC_DAT;
 	RAM_WE <= DEC_WR and DEC_WR_EN and CTRL0(DECEN);
