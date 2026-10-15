@@ -520,8 +520,11 @@ vdp vdp
 	.BR_N(VBUS_BR_N),
 	.BGACK_N(VBUS_BGACK_N),
 
-//	.VRAM_SPEED(1),
-//	.VSCROLL_BUG(0),
+	// Same values as the vdp.vhd port defaults the synthesized core uses.
+	// Tools that ignore VHDL port defaults would see 0 on open inputs.
+	.SVP_QUIRK(1'b0),
+	.VRAM_SPEED(1'b1),
+	.VSCROLL_BUG(1'b1),
 	.BORDER_EN(BORDER),
 	.CRAM_DOTS(CRAM_DOTS),
 	.OBJ_LIMIT_HIGH_EN(OBJ_LIMIT_HIGH),
