@@ -64,6 +64,7 @@ architecture rtl of PCM is
 	signal SAMPLE_CE 	: std_logic;
 	signal STEP 		: std_logic;
 	signal WRA 			: reg8x27_t;
+	signal WRA_RD		: reg8x16_t;
 	signal CH 			: unsigned(2 downto 0);
 	signal LSUM, RSUM : unsigned(16 downto 0);
 	signal LOUT, ROUT : signed(15 downto 0);
@@ -154,37 +155,37 @@ begin
 				elsif IO_RD = '1' then
 					case A(3 downto 0) is
 						when x"0" =>			--
-							DO <= WRA(0)(18 downto 11);
+							DO <= WRA_RD(0)(7 downto 0);
 						when x"1" =>			--
-							DO <= WRA(0)(26 downto 19);
+							DO <= WRA_RD(0)(15 downto 8);
 						when x"2" =>			--
-							DO <= WRA(1)(18 downto 11);
+							DO <= WRA_RD(1)(7 downto 0);
 						when x"3" =>			--
-							DO <= WRA(1)(26 downto 19);
+							DO <= WRA_RD(1)(15 downto 8);
 						when x"4" =>			--
-							DO <= WRA(2)(18 downto 11);
+							DO <= WRA_RD(2)(7 downto 0);
 						when x"5" =>			--
-							DO <= WRA(2)(26 downto 19);
+							DO <= WRA_RD(2)(15 downto 8);
 						when x"6" =>			--
-							DO <= WRA(3)(18 downto 11);
+							DO <= WRA_RD(3)(7 downto 0);
 						when x"7" =>			--
-							DO <= WRA(3)(26 downto 19);
+							DO <= WRA_RD(3)(15 downto 8);
 						when x"8" =>			--
-							DO <= WRA(4)(18 downto 11);
+							DO <= WRA_RD(4)(7 downto 0);
 						when x"9" =>			--
-							DO <= WRA(4)(26 downto 19);
+							DO <= WRA_RD(4)(15 downto 8);
 						when x"A" =>			--
-							DO <= WRA(5)(18 downto 11);
+							DO <= WRA_RD(5)(7 downto 0);
 						when x"B" =>			--
-							DO <= WRA(5)(26 downto 19);
+							DO <= WRA_RD(5)(15 downto 8);
 						when x"C" =>			--
-							DO <= WRA(6)(18 downto 11);
+							DO <= WRA_RD(6)(7 downto 0);
 						when x"D" =>			--
-							DO <= WRA(6)(26 downto 19);
+							DO <= WRA_RD(6)(15 downto 8);
 						when x"E" =>			--
-							DO <= WRA(7)(18 downto 11);
+							DO <= WRA_RD(7)(7 downto 0);
 						when x"F" =>			--
-							DO <= WRA(7)(26 downto 19);
+							DO <= WRA_RD(7)(15 downto 8);
 						when others => null;
 					end case;
 				elsif RAM_RD = '1' then
@@ -218,6 +219,7 @@ begin
 		if RST_N = '0' then
 			CH <= (others => '0');
 			WRA <= (others => (others => '0'));
+			WRA_RD <= (others => (others => '0'));
 			LOUT <= (others => '0');
 			ROUT <= (others => '0');
 			LSUM <= (others => '0');
@@ -235,6 +237,13 @@ begin
 					end if;
 				else
 					CH <= CH + 1;
+					
+					-- The readable address is the one of the sample being played, taken
+					-- before the step: it never shows the 0xFF loop mark, and it holds
+					-- its last value while the chip is off.
+					if ONOFF = '1' then
+						WRA_RD(to_integer(CH)) <= WRA(to_integer(CH))(26 downto 11);
+					end if;
 					
 					if CHOFF(to_integer(CH)) = '0' and ONOFF = '1' then
 						WD := unsigned(RAM_DI);
