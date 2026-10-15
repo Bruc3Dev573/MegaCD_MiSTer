@@ -82,6 +82,7 @@ entity ASIC is
 		CDD_STAT			: in std_logic_vector(39 downto 0);
 		CDD_COMM			: out std_logic_vector(39 downto 0);
 		CDD_SEND			: out std_logic;
+		CDD_RESEND		: out std_logic;	-- with CDD_SEND: the command is a frame resend, not a new write
 		CDD_REC			: in std_logic;
 		CDD_DM			: in std_logic;
 		
@@ -1067,6 +1068,7 @@ begin
 			TIMER <= (others => '0');
 			SUB_CPU_CDC_READ <= '0';
 			CDD_SEND <= '0';
+			CDD_RESEND <= '0';
 			CDD_REC_OLD <= '0';
 --			SC_CNT <= (others => '0');
 			OLD_CDC_INT_N <= '1';
@@ -1122,16 +1124,20 @@ begin
 				-- While HOCK is set the gate array clocks its command registers out to the drive
 				-- every 75 Hz frame, whether or not software wrote a new command. Hand the command
 				-- over on HOCK rising and then every 166667 ticks of 12.5 MHz, restarting the
-				-- count on each software write so a written command is not sent twice.
+				-- count on each software write so a written command is not sent twice. The
+				-- drive is told which handovers are such resends, so it can tell them from a
+				-- command software wrote again.
 				CDD_SEND <= '0';
 				if HOCK = '0' then
 					CDD_FRAME_CNT <= (others => '0');
 				elsif HOCK_OLD = '0' then
 					CDD_SEND <= '1';
+					CDD_RESEND <= '0';
 					CDD_FRAME_CNT <= (others => '0');
 				elsif CLK_12M_F = '1' then
 					if CDD_FRAME_CNT = 166666 then
 						CDD_SEND <= '1';
+						CDD_RESEND <= '1';
 						CDD_FRAME_CNT <= (others => '0');
 					else
 						CDD_FRAME_CNT <= CDD_FRAME_CNT + 1;
@@ -1292,6 +1298,7 @@ begin
 								if S68K_LDS_N = '0' then
 									CDDC(39 downto 36) <= S68K_DI(3 downto 0);
 									CDD_SEND <= HOCK;
+									CDD_RESEND <= '0';
 									CDD_FRAME_CNT <= (others => '0');
 								end if;
 								if S68K_UDS_N = '0' then

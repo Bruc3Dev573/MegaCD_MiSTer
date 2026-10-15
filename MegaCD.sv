@@ -773,6 +773,7 @@ MCD MCD
 	.CDD_STAT(scd_cdd_stat),
 	.CDD_COMM(scd_cdd_comm),
 	.CDD_SEND(scd_cdd_send),
+	.CDD_RESEND(scd_cdd_resend),
 	.CDD_REC(scd_cdd_rec),
 	.CDD_DM(scd_cdd_dm),
 	
@@ -1090,6 +1091,7 @@ reg [39:0] scd_cdd_stat;
 reg scd_cdd_dm;
 wire [39:0] scd_cdd_comm;
 wire scd_cdd_send;
+wire scd_cdd_resend;
 reg scd_cdd_rec;
 
 always @(posedge clk_sys) begin
@@ -1119,7 +1121,8 @@ always @(posedge clk_sys) begin
 	
 	scd_cdd_send_old <= scd_cdd_send;
 	if (scd_cdd_send && !scd_cdd_send_old) begin
-		cd_in[47:0] <= {8'h00,scd_cdd_comm};
+		// Bit 40 marks a command the gate array resends every frame, not a new write.
+		cd_in[47:0] <= {7'h00,scd_cdd_resend,scd_cdd_comm};
 		cd_in[48] <= ~cd_in[48];
 	end
 	else begin

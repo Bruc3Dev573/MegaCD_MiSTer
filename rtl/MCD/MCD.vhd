@@ -46,6 +46,7 @@ entity MCD is
 		CDD_STAT			: in std_logic_vector(39 downto 0);
 		CDD_COMM			: out std_logic_vector(39 downto 0);
 		CDD_SEND			: out std_logic;
+		CDD_RESEND		: out std_logic;
 		CDD_REC			: in std_logic;
 		CDD_DM			: in std_logic;
 		
@@ -374,6 +375,7 @@ begin
 		CDD_STAT 		=> CDD_STAT,
 		CDD_COMM 		=> CDD_COMM,
 		CDD_SEND 		=> CDD_SEND,
+		CDD_RESEND 		=> CDD_RESEND,
 		CDD_REC 			=> CDD_REC,
 		CDD_DM 			=> CDD_DM,
 		
