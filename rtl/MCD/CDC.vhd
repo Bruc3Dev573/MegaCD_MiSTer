@@ -394,7 +394,13 @@ begin
 						end if;
 
 						WORD_CNT <= WORD_CNT + 1;
-						if WORD_CNT = 12/2 then
+						if WORD_CNT = 0 then
+							-- DECI can still be low from a sync insertion a few ms before.
+							-- Released here, it falls again at the end of this sector, which
+							-- then raises its own interrupt.
+							IFSTAT(DECI) <= '1';
+							STAT3(VALST) <= '1';
+						elsif WORD_CNT = 12/2 then
 							DEC_HEAD01 <= CD_DI;
 							if CTRL0(WRRQ) = '0' then
 								HEAD0 <= CD_DI(7 downto 0);
