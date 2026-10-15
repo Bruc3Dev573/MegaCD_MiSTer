@@ -256,8 +256,8 @@ begin
 							when x"2" =>			--R2 DBCL
 								DO <= DBC(7 downto 0);
 							when x"3" =>			--R3 DBCH
-								-- DBC is 12 bits on the LC8951, so DBCH reads back only bits 11:8.
-								DO <= x"0" & DBC(11 downto 8);
+								-- Bits 7:4 are the transfer-end flags (DBC 15:12), set to F when a transfer ends.
+								DO <= DBC(15 downto 8);
 							when x"4" =>			--R4 HEAD0
 								DO <= HEAD0;
 							when x"5" =>			--R5 HEAD1
@@ -521,7 +521,8 @@ begin
 						when x"2" =>			--R2 DBCL
 							DBC(7 downto 0) <= DI;
 						when x"3" =>			--R3 DBCH
-							DBC(15 downto 8) <= DI;
+							-- DBC is 12 bits on the LC8951: a write sets bits 11:8 and leaves the flags alone.
+							DBC(11 downto 8) <= DI(3 downto 0);
 						when x"4" =>			--R4 DACL
 							DAC(7 downto 0) <= DI;
 						when x"5" =>			--R5 DACH
@@ -546,6 +547,7 @@ begin
 					IFSTAT(DTBSY) <= '1';
 					IFSTAT(DTEN) <= '1';
 					IFSTAT(DTEI) <= '1';
+					DBC(15 downto 12) <= "0000";
 					DTEN_N <= '1';
 					
 --					FIFO_RD_POS <= '0';
