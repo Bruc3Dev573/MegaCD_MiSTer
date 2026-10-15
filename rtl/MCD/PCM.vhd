@@ -72,6 +72,7 @@ architecture rtl of PCM is
 	signal SAMPLE_CE 	: std_logic;
 	signal STEP 		: std_logic;
 	signal WRA 			: reg8x27_t;
+	signal WRA_RD		: reg8x16_t;
 	signal CH 			: unsigned(2 downto 0);
 	signal LSUM, RSUM : unsigned(16 downto 0);
 	signal LOUT, ROUT : signed(15 downto 0);
@@ -202,37 +203,37 @@ begin
 				elsif IO_RD = '1' then
 					case A(3 downto 0) is
 						when x"0" =>			--
-							DO_INT <= WRA(0)(18 downto 11);
+							DO_INT <= WRA_RD(0)(7 downto 0);
 						when x"1" =>			--
-							DO_INT <= WRA(0)(26 downto 19);
+							DO_INT <= WRA_RD(0)(15 downto 8);
 						when x"2" =>			--
-							DO_INT <= WRA(1)(18 downto 11);
+							DO_INT <= WRA_RD(1)(7 downto 0);
 						when x"3" =>			--
-							DO_INT <= WRA(1)(26 downto 19);
+							DO_INT <= WRA_RD(1)(15 downto 8);
 						when x"4" =>			--
-							DO_INT <= WRA(2)(18 downto 11);
+							DO_INT <= WRA_RD(2)(7 downto 0);
 						when x"5" =>			--
-							DO_INT <= WRA(2)(26 downto 19);
+							DO_INT <= WRA_RD(2)(15 downto 8);
 						when x"6" =>			--
-							DO_INT <= WRA(3)(18 downto 11);
+							DO_INT <= WRA_RD(3)(7 downto 0);
 						when x"7" =>			--
-							DO_INT <= WRA(3)(26 downto 19);
+							DO_INT <= WRA_RD(3)(15 downto 8);
 						when x"8" =>			--
-							DO_INT <= WRA(4)(18 downto 11);
+							DO_INT <= WRA_RD(4)(7 downto 0);
 						when x"9" =>			--
-							DO_INT <= WRA(4)(26 downto 19);
+							DO_INT <= WRA_RD(4)(15 downto 8);
 						when x"A" =>			--
-							DO_INT <= WRA(5)(18 downto 11);
+							DO_INT <= WRA_RD(5)(7 downto 0);
 						when x"B" =>			--
-							DO_INT <= WRA(5)(26 downto 19);
+							DO_INT <= WRA_RD(5)(15 downto 8);
 						when x"C" =>			--
-							DO_INT <= WRA(6)(18 downto 11);
+							DO_INT <= WRA_RD(6)(7 downto 0);
 						when x"D" =>			--
-							DO_INT <= WRA(6)(26 downto 19);
+							DO_INT <= WRA_RD(6)(15 downto 8);
 						when x"E" =>			--
-							DO_INT <= WRA(7)(18 downto 11);
+							DO_INT <= WRA_RD(7)(7 downto 0);
 						when x"F" =>			--
-							DO_INT <= WRA(7)(26 downto 19);
+							DO_INT <= WRA_RD(7)(15 downto 8);
 						when others => null;
 					end case;
 				elsif RAM_RD = '1' then
@@ -307,6 +308,7 @@ begin
 		if RST_N = '0' then
 			CH <= (others => '0');
 			WRA <= (others => (others => '0'));
+			WRA_RD <= (others => (others => '0'));
 			LOUT <= (others => '0');
 			ROUT <= (others => '0');
 			LSUM <= (others => '0');
@@ -324,6 +326,13 @@ begin
 					end if;
 				else
 					CH <= CH + 1;
+					
+					-- The readable address is the one of the sample being played, taken
+					-- before the step: it never shows the 0xFF loop mark, and it holds
+					-- its last value while the chip is off.
+					if ONOFF = '1' then
+						WRA_RD(to_integer(CH)) <= WRA(to_integer(CH))(26 downto 11);
+					end if;
 					
 					-- 0xFF is the loop marker, not sample data: the real chip
 					-- never plays it (GPGX: "infinite loop should not output
@@ -372,14 +381,16 @@ begin
 					when "000000" =>
 						STEP <= SS_WR_DATA(16);
 						CH   <= unsigned(SS_WR_DATA(19 downto 17));
-					when "001111" => WRA(0) <= SS_WR_DATA(26 downto 0);
-					when "010000" => WRA(1) <= SS_WR_DATA(26 downto 0);
-					when "010001" => WRA(2) <= SS_WR_DATA(26 downto 0);
-					when "010010" => WRA(3) <= SS_WR_DATA(26 downto 0);
-					when "010011" => WRA(4) <= SS_WR_DATA(26 downto 0);
-					when "010100" => WRA(5) <= SS_WR_DATA(26 downto 0);
-					when "010101" => WRA(6) <= SS_WR_DATA(26 downto 0);
-					when "010110" => WRA(7) <= SS_WR_DATA(26 downto 0);
+					-- The readable addresses are not in the state: they restart from
+					-- the restored pointers and follow them from the next sample on.
+					when "001111" => WRA(0) <= SS_WR_DATA(26 downto 0); WRA_RD(0) <= SS_WR_DATA(26 downto 11);
+					when "010000" => WRA(1) <= SS_WR_DATA(26 downto 0); WRA_RD(1) <= SS_WR_DATA(26 downto 11);
+					when "010001" => WRA(2) <= SS_WR_DATA(26 downto 0); WRA_RD(2) <= SS_WR_DATA(26 downto 11);
+					when "010010" => WRA(3) <= SS_WR_DATA(26 downto 0); WRA_RD(3) <= SS_WR_DATA(26 downto 11);
+					when "010011" => WRA(4) <= SS_WR_DATA(26 downto 0); WRA_RD(4) <= SS_WR_DATA(26 downto 11);
+					when "010100" => WRA(5) <= SS_WR_DATA(26 downto 0); WRA_RD(5) <= SS_WR_DATA(26 downto 11);
+					when "010101" => WRA(6) <= SS_WR_DATA(26 downto 0); WRA_RD(6) <= SS_WR_DATA(26 downto 11);
+					when "010110" => WRA(7) <= SS_WR_DATA(26 downto 0); WRA_RD(7) <= SS_WR_DATA(26 downto 11);
 					when "010111" =>
 						LOUT <= signed(SS_WR_DATA(15 downto 0));
 						ROUT <= signed(SS_WR_DATA(31 downto 16));
