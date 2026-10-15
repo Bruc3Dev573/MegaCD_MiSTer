@@ -434,7 +434,7 @@ begin
 			if EN = '1' then
 				if DMA_ADDR_SET = '1' then
 					DMA_ADDR <= DMAA(18 downto 3) & "00";
-					-- Start every DMA word-aligned; an odd-length transfer leaves DMA_BYTE set.
+					-- Start every DMA word-aligned, also one retargeted in the middle of a word.
 					DMA_BYTE <= '0';
 					DS <= DS_IDLE;
 					-- Do not leave the CDC host-read strobe asserted when a DMA is retargeted
@@ -454,6 +454,12 @@ begin
 				OLD_CDC_DTEN_N <= CDC_DTEN_N;
 				if CDC_DTEN_N = '1' and OLD_CDC_DTEN_N = '0' then
 					EDT <= '1';
+				end if;
+				-- A word left half read when the CDC transfer stops (the last byte of an
+				-- odd-length transfer, or a transfer cut short) is dropped, so the next
+				-- transfer starts on a word boundary.
+				if CDC_DTEN_N = '1' and CDC_HRD = '0' then
+					DMA_BYTE <= '0';
 				end if;
 				
 				case DS is
@@ -517,16 +523,24 @@ begin
 						
 					when DS_WRITE_WAIT =>
 						case DD is
-							when "010" =>
-								if MAIN_CPU_CDC_READ = '1' then
-									DSR <= '0';
-									DS <= DS_IDLE;
-								end if;
-								
-							when "011" =>
-								if SUB_CPU_CDC_READ = '1' then
-									DSR <= '0';
-									DS <= DS_IDLE;
+							when "010" | "011" =>
+								-- While a word waits in HD the gate array already reads the high byte of
+								-- the next word from the CDC; the low byte follows once the CPU has read
+								-- HD. DBC so runs one byte ahead of the words handed over, and an odd
+								-- transfer ends as soon as its last full word is in HD.
+								if DMA_ADDR_SET = '0' then
+									if CDC_HRD = '1' then
+										if CDC_WAIT_N = '0' then
+											CDC_HRD <= '0';
+											DMA_DAT(15 downto 8) <= CDC_HDI;
+											DMA_BYTE <= '1';
+										end if;
+									elsif (DD(0) = '0' and MAIN_CPU_CDC_READ = '1') or (DD(0) = '1' and SUB_CPU_CDC_READ = '1') then
+										DSR <= '0';
+										DS <= DS_IDLE;
+									elsif DMA_BYTE = '0' and CDC_DTEN_N = '0' and CDC_WAIT_N = '1' then
+										CDC_HRD <= '1';
+									end if;
 								end if;
 							
 							when "100" =>
