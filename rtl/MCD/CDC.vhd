@@ -163,6 +163,7 @@ architecture rtl of CDC is
 	signal FRAME_END : unsigned(19 downto 0);
 	signal FRAME_MID : unsigned(19 downto 0);
 	signal STREAM_SEEN : std_logic;
+	signal GAP_CNT : unsigned(1 downto 0);		-- frames without a sector in a stream
 	signal SECTOR_END : std_logic;
 	signal SECTOR_ACTIVE : std_logic;
 --	signal DECI_WAIT_CNT : unsigned(15 downto 0);
@@ -452,10 +453,13 @@ begin
 	RAM_WE <= DEC_WR and DEC_WR_EN and CTRL0(DECEN);
 
 	-- 75 Hz decoder frame timer, restarted by each sector that arrives from the drive.
-	-- Sync insertion runs only until the first sector after the decoder is enabled. Main
-	-- hands sectors over on a millisecond timer, so once the stream has started a missing
-	-- sector cannot be told from a late one, and an insertion carries no data (Crime Patrol
-	-- hung when an insertion in the stream still read the previous sector's header).
+	-- Sync insertion runs until the first sector after the decoder is enabled. Main hands
+	-- sectors over on a millisecond timer, so in a stream a missing sector cannot be told
+	-- from a late one. Insertion starts again only when no sector has come for three frames
+	-- (40 ms), as after a pause or a stop. Sectors in a stream are not that far apart.
+	-- The frames of the restarted insertion fall half a frame after the slots of the
+	-- stream: when the drive sends again, its first sector does not come right after an
+	-- insertion, so its interrupt is not taken for the insertion's.
 	FRAME_END <= to_unsigned(709378, 20) when PALSW = '1' else to_unsigned(715908, 20);
 	FRAME_MID <= to_unsigned(283751, 20) when PALSW = '1' else to_unsigned(286363, 20);
 	process( RESET_N, CLK )
@@ -463,6 +467,7 @@ begin
 		if RESET_N = '0' then
 			FRAME_CNT <= (others => '0');
 			STREAM_SEEN <= '0';
+			GAP_CNT <= (others => '0');
 			DEC_FRAME <= '0';
 			DEC_MID <= '0';
 		elsif rising_edge(CLK) then
@@ -471,12 +476,21 @@ begin
 			if CTRL0(DECEN) = '0' then
 				FRAME_CNT <= (others => '0');
 				STREAM_SEEN <= '0';
+				GAP_CNT <= (others => '0');
 			elsif SECTOR_END = '1' then
 				FRAME_CNT <= (others => '0');
 				STREAM_SEEN <= '1';
+				GAP_CNT <= (others => '0');
 			elsif FRAME_CNT = FRAME_END then
 				FRAME_CNT <= (others => '0');
-				DEC_FRAME <= not STREAM_SEEN;
+				if STREAM_SEEN = '0' then
+					DEC_FRAME <= '1';
+				elsif GAP_CNT = 2 then
+					FRAME_CNT <= '0' & FRAME_END(19 downto 1);
+					STREAM_SEEN <= '0';
+				else
+					GAP_CNT <= GAP_CNT + 1;
+				end if;
 			else
 				FRAME_CNT <= FRAME_CNT + 1;
 				if FRAME_CNT = FRAME_MID then
