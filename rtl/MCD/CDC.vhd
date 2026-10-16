@@ -44,7 +44,7 @@ entity CDC is
 		SS_FREEZE	: in std_logic := '0';
 		--Stream position as the BCD MSF header of the last decoded sector.
 		--CDD status lags delivery by one or two sectors, so the drive is restored
-		--from HEAD to avoid sending sectors the CDC already consumed.
+		--from it to avoid sending sectors the CDC already consumed.
 		SS_HEAD_MSF	: out std_logic_vector(23 downto 0);
 		--Transfer state in bits 15..13 controls the sub-CPU park gate.
 		SS_DBG		: out std_logic_vector(15 downto 0)
@@ -198,7 +198,12 @@ begin
 	--Moving host-transfer states are excluded.
 	SS_QUIET <= '1' when TS = TS_IDLE or TS = TS_SEND_WAIT else '0';
 
-	SS_HEAD_MSF <= HEAD0 & HEAD1 & HEAD2;
+	--A sync insertion frame loads the no-data header 01 80 00 60 into HEAD, which is
+	--no position. The drive is then restored from the header of the last sector that
+	--arrived, which DEC_HEAD keeps.
+	SS_HEAD_MSF <= DEC_HEAD01(7 downto 0) & DEC_HEAD01(15 downto 8) & DEC_HEAD23(7 downto 0)
+	                   when HEAD0 = x"01" and HEAD1 = x"80" and HEAD2 = x"00" and HEAD3 = x"60" else
+	               HEAD0 & HEAD1 & HEAD2;
 
 	--Keep this packed report stable. The top-level park gate uses TS.
 	SS_DBG <= std_logic_vector(to_unsigned(TransferState_t'pos(TS), 3)) &
