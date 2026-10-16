@@ -216,6 +216,7 @@ architecture rtl of ASIC is
 	signal DMA_RUN 					: std_logic;
 	signal DMA_WRAM_WAIT 			: std_logic;
 	signal DMA_WORD_PEND 			: std_logic;
+	signal DMA_HOST_PEND 			: std_logic;
 	signal PR_DMA_RUN 				: std_logic;
 	signal WR_DMA_RUN 				: std_logic;
 	signal PCM_DMA_RUN 				: std_logic;
@@ -538,7 +539,10 @@ begin
 									elsif (DD(0) = '0' and MAIN_CPU_CDC_READ = '1') or (DD(0) = '1' and SUB_CPU_CDC_READ = '1') then
 										DSR <= '0';
 										DS <= DS_IDLE;
-									elsif DMA_BYTE = '0' and CDC_DTEN_N = '0' and CDC_WAIT_N = '1' then
+									-- A savestate freeze request holds the read-ahead off: once the CPU has
+									-- read HD the transfer rests in DS_IDLE with no half word, which is quiet.
+									elsif DMA_BYTE = '0' and CDC_DTEN_N = '0' and CDC_WAIT_N = '1' and
+									      SS_QUIESCE = '0' then
 										CDC_HRD <= '1';
 									end if;
 								end if;
@@ -575,9 +579,12 @@ begin
 			--w55 and w56 hold the transfer in flight: the running address, the word read
 			--from the CDC and not yet written, DMA_BYTE and DMA_RUN. A word waiting in
 			--DS_WRITE or DS_WRITE_WAIT restarts in DS_WRITE: the write has not completed
-			--(DMA_ADDR moves on only when it does) and repeating it is harmless.
+			--(DMA_ADDR moves on only when it does) and repeating it is harmless. A host
+			--read word already in HD (w55 bit 21) restarts in DS_WRITE_WAIT instead, since
+			--DMA_DAT may then hold the high byte of the next word, read ahead.
 			--DS_CDC_READ restarts in DS_IDLE with CDC_HRD low, so the CDC, restored with
-			--its staged byte, delivers the same byte again.
+			--its staged byte, delivers the same byte again. So does a read-ahead in
+			--DS_WRITE_WAIT that the CDC had not answered yet.
 			if SS_WR_EN = '1' then
 				case SS_ADDR is
 					when x"00" =>
@@ -598,7 +605,11 @@ begin
 						if SS_WR_DATA(31) = '1' then
 							DMA_ADDR <= SS_WR_DATA(17 downto 0);
 							if SS_WR_DATA(18) = '1' then
-								DS <= DS_WRITE;
+								if SS_WR_DATA(21) = '1' then
+									DS <= DS_WRITE_WAIT;
+								else
+									DS <= DS_WRITE;
+								end if;
 							end if;
 							DMA_RUN  <= SS_WR_DATA(19);
 							DMA_BYTE <= SS_WR_DATA(20);
@@ -634,6 +645,7 @@ begin
 	--with its next byte staged) are all saved, so this state is captured as it is.
 	DMA_WRAM_WAIT <= '1' when DS = DS_WRITE and DD = "111" and MODE = '0' and RET0 = '1' else '0';
 	DMA_WORD_PEND <= '1' when DS = DS_WRITE or DS = DS_WRITE_WAIT else '0';
+	DMA_HOST_PEND <= '1' when DS = DS_WRITE_WAIT and DD(2) = '0' else '0';
 
 	SS_QUIET_BITS(0)  <= '1' when (DS = DS_IDLE and DMA_BYTE = '0') or DMA_WRAM_WAIT = '1' else '0';
 	SS_QUIET_BITS(1)  <= '1' when GS   = GS_IDLE   else '0';
@@ -719,9 +731,10 @@ begin
 		--w54 CDD command retransmit phase
 		"00000000000000" & std_logic_vector(CDD_FRAME_CNT)
 			when SS_ADDR = x"36" else
-		--w55 CDC DMA transfer in flight: valid mark, DMA_BYTE, DMA_RUN, a word waiting
-		--to be written (DS_WRITE or DS_WRITE_WAIT), and the running address
-		"1" & "0000000000" & DMA_BYTE & DMA_RUN & DMA_WORD_PEND & DMA_ADDR
+		--w55 CDC DMA transfer in flight: valid mark, a host read word already in HD,
+		--DMA_BYTE, DMA_RUN, a word waiting to be written (DS_WRITE or DS_WRITE_WAIT),
+		--and the running address
+		"1" & "000000000" & DMA_HOST_PEND & DMA_BYTE & DMA_RUN & DMA_WORD_PEND & DMA_ADDR
 			when SS_ADDR = x"37" else
 		--w56 CDC DMA word read from the CDC and not yet written
 		x"0000" & DMA_DAT
