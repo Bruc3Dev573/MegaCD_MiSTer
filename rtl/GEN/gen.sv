@@ -174,13 +174,16 @@ module gen
 	output        SS_FM_REPLAYING,
 
 	// Z80 architectural state (region Z80_REGS): the T80 registers, 212 bits over words 0-6,
-	// and the HALT state in word 7.
+	// and in word 7 the HALT state and the bank register.
 	output        SS_Z80_FROZEN,
 	output [211:0] SS_Z80_REG,
 	input  [211:0] SS_Z80_DIR,
 	input         SS_Z80_DIRSET,
 	output        SS_Z80_HALT,
 	input         SS_Z80_HALT_DIR,  // applied with SS_Z80_DIRSET
+	output  [8:0] SS_Z80_BAR,       // bank register, A23-A15
+	input   [8:0] SS_Z80_BAR_DIR,
+	input         SS_Z80_EXT_SET,   // restore pulse for the word 7 state, images that have it
 
 	// PSG registers (region PSG_REGS)
 	input   [2:0] SS_PSG_ADDR,
@@ -1280,8 +1283,10 @@ reg [23:15] BAR;
 
 always @(posedge MCLK) begin
 	if (reset) BAR <= 0;
+	else if (SS_Z80_EXT_SET) BAR <= SS_Z80_BAR_DIR;
 	else if (BANK_SEL & ZBUS_WE) BAR <= {ZBUS_DO[0], BAR[23:16]};
 end
+assign SS_Z80_BAR = BAR;
 
 
 //--------------------------------------------------------------

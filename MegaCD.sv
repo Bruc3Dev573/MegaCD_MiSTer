@@ -645,12 +645,16 @@ gen gen
 	.SS_Z80_DIR(ss_z80_dir),
 	.SS_Z80_DIRSET(ss_z80_dirset),
 	.SS_Z80_HALT(ss_z80_halt),
-	.SS_Z80_HALT_DIR(ss_z80_halt_dir)
+	.SS_Z80_HALT_DIR(ss_z80_halt_dir),
+	.SS_Z80_BAR(ss_z80_bar),
+	.SS_Z80_BAR_DIR(ss_z80_bar_dir),
+	.SS_Z80_EXT_SET(ss_z80_ext_set)
 );
 
 wire         ss_z80_frozen;
 wire [211:0] ss_z80_reg;
 wire         ss_z80_halt;
+wire   [8:0] ss_z80_bar;
 
 wire  [2:0] ss_psg_addr;
 wire        ss_psg_wr_en;
@@ -1931,7 +1935,8 @@ end
 
 // Z80 state. Words 0-6 hold the 212 bits of T80 REG. Word 7 holds the state outside it,
 // bit 31 marks images that have the word (older images read 0 there and load as before):
-//   bit 11: HALT
+//   bits 8-0: bank register (A23-A15)
+//   bit 11:   HALT
 // Words 8-31 are spare. The restore is one DIRSet pulse after word 7, because T80
 // latches the whole register file at once.
 wire ss_sel_z80 = `SS_IN(SS_OFF_Z80_REGS, SS_Z80_REGS_SIZE);
@@ -1939,9 +1944,12 @@ wire [4:0] ss_z80_word = 5'(ss_state_addr - SS_OFF_Z80_REGS);
 
 reg [211:0] ss_z80_dir_r;
 reg         ss_z80_halt_dir_r;
+reg   [8:0] ss_z80_bar_dir_r;
+reg         ss_z80_ext_set_r;
 reg         ss_z80_dirset_r;
 always @(posedge clk_sys) begin
 	ss_z80_dirset_r <= 0;
+	ss_z80_ext_set_r <= 0;
 	if(ss_state_we & ss_sel_z80) begin
 		case(ss_z80_word)
 			5'd0: ss_z80_dir_r[ 31:  0] <= ss_state_dout;
@@ -1952,8 +1960,10 @@ always @(posedge clk_sys) begin
 			5'd5: ss_z80_dir_r[191:160] <= ss_state_dout;
 			5'd6: ss_z80_dir_r[211:192] <= ss_state_dout[19:0];
 			5'd7: begin
-				// An image without word 7 keeps the HALT state the Z80 has.
+				// An image without word 7 keeps the HALT state the Z80 has and the bank.
 				ss_z80_halt_dir_r <= ss_state_dout[31] ? ss_state_dout[11] : ss_z80_halt;
+				ss_z80_bar_dir_r  <= ss_state_dout[8:0];
+				ss_z80_ext_set_r  <= ss_state_dout[31];
 				ss_z80_dirset_r <= 1;   // Last word, latch all registers.
 			end
 			default: ;
@@ -1962,6 +1972,8 @@ always @(posedge clk_sys) begin
 end
 wire [211:0] ss_z80_dir     = ss_z80_dir_r;
 wire         ss_z80_halt_dir = ss_z80_halt_dir_r;
+wire   [8:0] ss_z80_bar_dir = ss_z80_bar_dir_r;
+wire         ss_z80_ext_set = ss_z80_ext_set_r;
 wire         ss_z80_dirset  = ss_z80_dirset_r;
 
 // Internal backup RAM. Port A is the MegaCD side and port B is the SD card save
@@ -2082,7 +2094,7 @@ always @(posedge clk_sys) begin
 		                  (ss_z80_word == 5'd4) ? ss_z80_reg[159:128] :
 		                  (ss_z80_word == 5'd5) ? ss_z80_reg[191:160] :
 		                  (ss_z80_word == 5'd6) ? {12'd0, ss_z80_reg[211:192]} :
-		                  (ss_z80_word == 5'd7) ? {1'b1, 19'd0, ss_z80_halt, 11'd0} : 32'd0;
+		                  (ss_z80_word == 5'd7) ? {1'b1, 19'd0, ss_z80_halt, 2'd0, ss_z80_bar} : 32'd0;
 	else case(ss_state_addr)
 		0: ss_state_din_r <= SS_MAGIC;
 		1: ss_state_din_r <= {SS_VERSION[7:0], SS_FULL_SIZE[23:0]};
