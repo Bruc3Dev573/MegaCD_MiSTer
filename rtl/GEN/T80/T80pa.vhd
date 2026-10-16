@@ -152,6 +152,16 @@ begin
 				MREQ_n  <= '1';
 				DI_Reg  <= "00000000";
 				CEN_pol <= '0';
+			elsif DIRSet = '1' then
+				-- A state restore puts the core at T1 of an opcode fetch (see T80). End the
+				-- bus cycle in progress, so that the fetch starts a new read at the restored
+				-- PC: a read already done belongs to the instruction the core was running.
+				WR_n    <= '1';
+				RD_n    <= '1';
+				IORQ_n  <= '1';
+				MREQ_n  <= '1';
+				IntCycleD_n <= "11";
+				CEN_pol <= '1';
 			elsif CEN_p = '1' and CEN_pol = '0' then
 				CEN_pol <= '1';
 				if MCycle = "001" then

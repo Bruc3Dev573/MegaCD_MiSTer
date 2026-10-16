@@ -415,6 +415,17 @@ begin
 				PC  <= unsigned(DIR(79 downto 64));
 				A   <= DIR(79 downto 64);
 				IStatus <= DIR(209 downto 208);
+				-- The restored state starts a new instruction: T1 of the opcode fetch at PC
+				-- (see the state machine). Nothing of the instruction the core was running
+				-- may follow: no register write still to come, no prefix. IR = NOP, whose
+				-- decode does nothing in the fetch.
+				IR <= "00000000";
+				ISet <= "00";
+				XY_State <= "00";
+				XY_Ind <= '0';
+				Read_To_Reg_r <= "00000";
+				Save_ALU_r <= '0';
+				ALU_Op_r <= "0000";
 
 			elsif ClkEn = '1' then
 				ALU_Op_r <= "0000";
@@ -1030,7 +1041,9 @@ begin
 		if RESET_n = '0' then
 			RFSH_n <= '1';
 		elsif rising_edge(CLK_n) then
-			if DIRSet = '0' and CEN = '1' then
+			if DIRSet = '1' then
+				RFSH_n <= '1';
+			elsif CEN = '1' then
 				if MCycle = "001" and ((TState = 2  and Wait_n = '1') or TState = 3) then
 					RFSH_n <= '0';
 				else
@@ -1079,6 +1092,15 @@ begin
 			if DIRSet = '1' then
 				IntE_FF2 <= DIR(211);
 				IntE_FF1 <= DIR(210);
+				-- T1 of an opcode fetch, as after the last T state of an instruction.
+				MCycle <= "001";
+				TState <= "001";
+				M1_n <= '0';
+				IntCycle <= '0';
+				NMICycle <= '0';
+				BusAck <= '0';
+				Auto_Wait_t1 <= '0';
+				Auto_Wait_t2 <= '0';
 			else
 				if NMI_n = '0' and OldNMI_n = '1' then
 					NMI_s <= '1';
