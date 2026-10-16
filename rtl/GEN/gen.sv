@@ -174,7 +174,7 @@ module gen
 	output        SS_FM_REPLAYING,
 
 	// Z80 architectural state (region Z80_REGS): the T80 registers, 212 bits over words 0-6,
-	// and in word 7 the HALT state and the bank register.
+	// and in word 7 the HALT state, the bank register, the bus request and the reset.
 	output        SS_Z80_FROZEN,
 	output [211:0] SS_Z80_REG,
 	input  [211:0] SS_Z80_DIR,
@@ -183,7 +183,10 @@ module gen
 	input         SS_Z80_HALT_DIR,  // applied with SS_Z80_DIRSET
 	output  [8:0] SS_Z80_BAR,       // bank register, A23-A15
 	input   [8:0] SS_Z80_BAR_DIR,
-	input         SS_Z80_EXT_SET,   // restore pulse for the word 7 state, images that have it
+	output  [1:0] SS_Z80_CTRL,      // Z80 reset and bus request lines, A11200 and A11100
+	input   [1:0] SS_Z80_CTRL_DIR,
+	input         SS_Z80_EXT_SET,   // restore pulse for the word 7 state, images that have it;
+	                                // SS_Z80_DIRSET must come after it (out of reset)
 
 	// PSG registers (region PSG_REGS)
 	input   [2:0] SS_PSG_ADDR,
@@ -1140,11 +1143,16 @@ always @(posedge MCLK) begin
 		Z80_BUSRQ_N <= 1;
 		Z80_RESET_N <= 0;
 	end
+	else if (SS_Z80_EXT_SET) begin
+		Z80_BUSRQ_N <= SS_Z80_CTRL_DIR[0];
+		Z80_RESET_N <= SS_Z80_CTRL_DIR[1];
+	end
 	else if(CTRL_SEL & ~MBUS_RNW & ~MBUS_UDS_N) begin
 		if (MBUS_A[11:8] == 1) Z80_BUSRQ_N <= ~MBUS_DO[8];
 		if (MBUS_A[11:8] == 2) Z80_RESET_N <=  MBUS_DO[8];
 	end
 end
+assign SS_Z80_CTRL = {Z80_RESET_N, Z80_BUSRQ_N};
 
 //-----------------------------------------------------------------------
 // ZBUS Handling
