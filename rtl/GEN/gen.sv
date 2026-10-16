@@ -173,11 +173,14 @@ module gen
 	input         SS_FM_REPLAY,   // 1-cycle pulse after a load completes
 	output        SS_FM_REPLAYING,
 
-	// Z80 architectural state (region Z80_REGS), 212 bits over 7 words.
+	// Z80 architectural state (region Z80_REGS): the T80 registers, 212 bits over words 0-6,
+	// and the HALT state in word 7.
 	output        SS_Z80_FROZEN,
 	output [211:0] SS_Z80_REG,
 	input  [211:0] SS_Z80_DIR,
 	input         SS_Z80_DIRSET,
+	output        SS_Z80_HALT,
+	input         SS_Z80_HALT_DIR,  // applied with SS_Z80_DIRSET
 
 	// PSG registers (region PSG_REGS)
 	input   [2:0] SS_PSG_ADDR,
@@ -1070,18 +1073,22 @@ wire        Z80_IO = ~Z80_MREQ_N & (~Z80_RD_N | ~Z80_WR_N);
 wire        Z80_IO_PRE = ~Z80_MREQ_N & Z80_RFSH_N;
 
 //T80s #(.T2Write(1)) Z80
-// Capture Z80 architectural state at opcode fetch, reset, or bus release.
-// T80 provides the 212-bit REG/DIRSet/DIR state interface.
+// Capture the Z80 state between two instructions (T2 of the opcode fetch of a new one,
+// see InstBound in T80), in reset, or with the bus given to the 68000.
+// T80 provides the 212-bit REG/DIRSet/DIR state interface. A DIRSet restarts the fetch.
+wire Z80_M1_N;
+wire Z80_HALT_N;
+wire Z80_INST_BOUND;
 reg ss_z80_freeze_eng;
 always @(posedge MCLK) begin
-	if(!SS_FREEZE)                                        ss_z80_freeze_eng <= 0;
-	else if(!Z80_M1_N || ~Z80_RESET_N || ~Z80_BUSAK_N)    ss_z80_freeze_eng <= 1;
+	if(!SS_FREEZE)                                           ss_z80_freeze_eng <= 0;
+	else if(Z80_INST_BOUND || ~Z80_RESET_N || ~Z80_BUSAK_N)  ss_z80_freeze_eng <= 1;
 end
 assign SS_Z80_FROZEN = ss_z80_freeze_eng;
+assign SS_Z80_HALT = ~Z80_HALT_N;
 
 wire Z80_CLKENp_G = Z80_CLKENp & ~ss_z80_freeze_eng;
 wire Z80_CLKENn_G = Z80_CLKENn & ~ss_z80_freeze_eng;
-wire Z80_M1_N;
 
 T80pa Z80
 (
@@ -1090,9 +1097,12 @@ T80pa Z80
 	.CEN_p(Z80_CLKENp_G),
 	.CEN_n(Z80_CLKENn_G),
 	.M1_n(Z80_M1_N),
+	.HALT_n(Z80_HALT_N),
 	.REG(SS_Z80_REG),
+	.InstBound(Z80_INST_BOUND),
 	.DIRSet(SS_Z80_DIRSET),
 	.DIR(SS_Z80_DIR),
+	.DIRHalt(SS_Z80_HALT_DIR),
 //	.CEN(Z80_CLKENn),
 	.BUSRQ_n(Z80_BUSRQ_N),
 	.BUSAK_n(Z80_BUSAK_N),

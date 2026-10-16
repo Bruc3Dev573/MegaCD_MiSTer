@@ -119,9 +119,11 @@ entity T80 is
 		Stop       : out std_logic;
 		out0       : in  std_logic := '0';  -- 0 => OUT(C),0, 1 => OUT(C),255
 		REG        : out std_logic_vector(211 downto 0); -- IFF2, IFF1, IM, IY, HL', DE', BC', IX, HL, DE, BC, PC, SP, R, I, F', A', F, A
+		InstBound  : out std_logic;
 
 		DIRSet     : in  std_logic := '0';
-		DIR        : in  std_logic_vector(211 downto 0) := (others => '0') -- IFF2, IFF1, IM, IY, HL', DE', BC', IX, HL, DE, BC, PC, SP, R, I, F', A', F, A
+		DIR        : in  std_logic_vector(211 downto 0) := (others => '0'); -- IFF2, IFF1, IM, IY, HL', DE', BC', IX, HL, DE, BC, PC, SP, R, I, F', A', F, A
+		DIRHalt    : in  std_logic := '0'  -- HALT state, restored with DIRSet (HALT_n is its output)
 	);
 end T80;
 
@@ -1063,6 +1065,12 @@ begin
 	HALT_n <= not Halt_FF;
 	BUSAK_n <= not (BusAck and RESET_n);
 	IntCycle_n <= not IntCycle;
+	-- T2 of the opcode fetch that starts an instruction: the previous instruction has
+	-- done its register write (T1) and has no effect left for the end of T2 (prefix, EI),
+	-- and no interrupt cycle runs. REG, with HALT_n, is then the whole state of the core
+	-- between two instructions, and a DIRSet resumes it exactly (it restarts the fetch).
+	InstBound <= '1' when MCycle = "001" and TState = "010" and IntCycle = '0' and NMICycle = '0' and
+	                      Prefix = "00" and SetEI = '0' else '0';
 	IntE <= IntE_FF1;
 	IORQ <= IORQ_i;
 	Stop <= I_DJNZ;
@@ -1105,6 +1113,7 @@ begin
 				BusAck <= '0';
 				Auto_Wait_t1 <= '0';
 				Auto_Wait_t2 <= '0';
+				Halt_FF <= DIRHalt;
 			else
 				if NMI_n = '0' and OldNMI_n = '1' then
 					NMI_s <= '1';
