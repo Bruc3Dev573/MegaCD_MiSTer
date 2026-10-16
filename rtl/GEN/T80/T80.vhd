@@ -415,6 +415,10 @@ begin
 				PC  <= unsigned(DIR(79 downto 64));
 				A   <= DIR(79 downto 64);
 				IStatus <= DIR(209 downto 208);
+				-- REG gives BC, DE, HL and their primes as the program sees them, whatever
+				-- the EXX flip-flop, and T80_Reg loads them into banks 0 and 1, so the
+				-- restored core starts with the flip-flop at 0.
+				Alternate <= '0';
 				-- The restored state starts a new instruction: T1 of the opcode fetch at PC
 				-- (see the state machine). Nothing of the instruction the core was running
 				-- may follow: no register write still to come, no prefix. IR = NOP, whose
