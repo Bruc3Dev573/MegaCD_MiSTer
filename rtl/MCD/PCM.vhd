@@ -30,7 +30,8 @@ entity PCM is
 		SR				: out signed(15 downto 0);
 
 		--Savestate, region PCM_REGS. It includes WRA, the eight 27-bit fixed-point
-		--read pointers, so each voice resumes mid-sample instead of at its loop point.
+		--read pointers, so each voice resumes mid-sample instead of at its loop point,
+		--and the eight readable addresses, which hold still while the sound is off.
 		SS_ADDR		: in std_logic_vector(5 downto 0) := (others => '0');
 		SS_WR_DATA	: in std_logic_vector(31 downto 0) := (others => '0');
 		SS_WR_EN		: in std_logic := '0';
@@ -73,6 +74,7 @@ architecture rtl of PCM is
 	signal STEP 		: std_logic;
 	signal WRA 			: reg8x27_t;
 	signal WRA_RD		: reg8x16_t;
+	signal SS_RD_OK	: std_logic;	-- the image being loaded holds the readable addresses
 	signal CH 			: unsigned(2 downto 0);
 	signal LSUM, RSUM : unsigned(16 downto 0);
 	signal LOUT, ROUT : signed(15 downto 0);
@@ -130,6 +132,12 @@ begin
 		"000000000000000" & std_logic_vector(LSUM)                    when SS_ADDR = "011000" else
 		"000000000000000" & std_logic_vector(RSUM)                    when SS_ADDR = "011001" else
 		x"0000" & DO_INT & RAM_DI                                     when SS_ADDR = "011010" else
+		--Word 27 bit 31 marks images that hold the readable addresses in words 28-31.
+		x"80000000"                                                   when SS_ADDR = "011011" else
+		WRA_RD(1) & WRA_RD(0)                                         when SS_ADDR = "011100" else
+		WRA_RD(3) & WRA_RD(2)                                         when SS_ADDR = "011101" else
+		WRA_RD(5) & WRA_RD(4)                                         when SS_ADDR = "011110" else
+		WRA_RD(7) & WRA_RD(6)                                         when SS_ADDR = "011111" else
 		(others => '0');
 	
 	process( RST_N, CLK )
@@ -314,6 +322,7 @@ begin
 			LSUM <= (others => '0');
 			RSUM <= (others => '0');
 			STEP <= '0';
+			SS_RD_OK <= '0';
 		elsif rising_edge(CLK) then
 			RAM_DI <= RAM_DI_B;
 			if ENABLE = '1' and SAMPLE_CE = '1' then
@@ -381,8 +390,11 @@ begin
 					when "000000" =>
 						STEP <= SS_WR_DATA(16);
 						CH   <= unsigned(SS_WR_DATA(19 downto 17));
-					-- The readable addresses are not in the state: they restart from
-					-- the restored pointers and follow them from the next sample on.
+					-- The readable addresses are set from the restored pointers first, then,
+					-- when the image holds them (word 27, before words 28-31 in the stream),
+					-- from words 28-31. They differ while the sound is off: the pointers sit at
+					-- the start addresses and the readable addresses keep the last sample
+					-- played. An older image follows the pointers from the next sample on.
 					when "001111" => WRA(0) <= SS_WR_DATA(26 downto 0); WRA_RD(0) <= SS_WR_DATA(26 downto 11);
 					when "010000" => WRA(1) <= SS_WR_DATA(26 downto 0); WRA_RD(1) <= SS_WR_DATA(26 downto 11);
 					when "010001" => WRA(2) <= SS_WR_DATA(26 downto 0); WRA_RD(2) <= SS_WR_DATA(26 downto 11);
@@ -397,6 +409,23 @@ begin
 					when "011000" => LSUM <= unsigned(SS_WR_DATA(16 downto 0));
 					when "011001" => RSUM <= unsigned(SS_WR_DATA(16 downto 0));
 					when "011010" => RAM_DI <= SS_WR_DATA(7 downto 0);
+					when "011011" => SS_RD_OK <= SS_WR_DATA(31);
+					when "011100" =>
+						if SS_RD_OK = '1' then
+							WRA_RD(0) <= SS_WR_DATA(15 downto 0); WRA_RD(1) <= SS_WR_DATA(31 downto 16);
+						end if;
+					when "011101" =>
+						if SS_RD_OK = '1' then
+							WRA_RD(2) <= SS_WR_DATA(15 downto 0); WRA_RD(3) <= SS_WR_DATA(31 downto 16);
+						end if;
+					when "011110" =>
+						if SS_RD_OK = '1' then
+							WRA_RD(4) <= SS_WR_DATA(15 downto 0); WRA_RD(5) <= SS_WR_DATA(31 downto 16);
+						end if;
+					when "011111" =>
+						if SS_RD_OK = '1' then
+							WRA_RD(6) <= SS_WR_DATA(15 downto 0); WRA_RD(7) <= SS_WR_DATA(31 downto 16);
+						end if;
 					when others => null;
 				end case;
 			end if;
