@@ -789,6 +789,7 @@ MCD MCD
 	
 	.CDC_DATA(cdc_d),
 	.CDC_DAT_WR(cdc_wr & (cdc_dat_download | cdc_cdda_download)),
+	.CDC_DAT_DOWNLOAD(cdc_dat_download | cdc_cdda_download),
 	.CDC_SC_WR(cdc_wr & cdc_sub_download),
 	.CDC_CDDA_WR(cdc_wr & cdc_cdda_download),
 	.CDDA_WR_READY(MCD_CDDA_WR_READY),

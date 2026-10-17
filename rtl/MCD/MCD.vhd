@@ -52,6 +52,7 @@ entity MCD is
 		
 		CDC_DATA			: in std_logic_vector(15 downto 0);
 		CDC_DAT_WR		: in std_logic;
+		CDC_DAT_DOWNLOAD	: in std_logic := '0';	-- high during each data or CD-DA sector download
 		CDC_SC_WR		: in std_logic;
 		CDC_CDDA_WR		: in std_logic;
 		CDDA_WR_READY	: out std_logic;
@@ -486,6 +487,7 @@ begin
 		
 		CD_DI   		=> CDC_DATA,
 		CD_WR   		=> CDC_DAT_WR,
+		CD_DOWNLOAD	=> CDC_DAT_DOWNLOAD,
 		
 		RAM_A_WR   	=> CDC_RAM_A_WR,
 		RAM_A_RD   	=> CDC_RAM_A_RD,
