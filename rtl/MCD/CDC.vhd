@@ -26,6 +26,9 @@ entity CDC is
 		
 		CD_DI			: in std_logic_vector(15 downto 0);
 		CD_WR			: in std_logic;
+		--High while one sector (data or CD-DA) is handed over, from before its first word
+		--to after its last. Each hand-over starts a sector.
+		CD_DOWNLOAD	: in std_logic := '0';
 		
 		RAM_A_WR   	: out std_logic_vector(15 downto 1);
 		RAM_A_RD   	: out std_logic_vector(15 downto 0);
@@ -149,6 +152,8 @@ architecture rtl of CDC is
 	
 	signal CD_WR_OLD : std_logic;
 	signal WORD_CNT : unsigned(10 downto 0);
+	signal CD_DOWNLOAD_OLD : std_logic;
+	signal CD_SKIP : std_logic;
 	signal RAM_POS : unsigned(11 downto 0);
 	signal DEC_POS : unsigned(11 downto 0);
 	signal DEC_ADDR : std_logic_vector(15 downto 0);
@@ -299,6 +304,8 @@ begin
 			WORD_CNT <= (others => '0');
 			RAM_POS <= (others => '0');
 			DEC_POS <= (others => '0');
+			CD_DOWNLOAD_OLD <= '0';
+			CD_SKIP <= '0';
 			DEC_DAT <= (others => '0');
 			DEC_WR <= '0';
 			DEC_WR_EN <= '0';
@@ -309,6 +316,18 @@ begin
 --			DECI_WAIT_CNT <= (others => '0');
 		elsif rising_edge(CLK) then
 			DEC_WR <= '0';
+			-- The decoder finds sectors by counting words, so the count starts with each
+			-- hand-over. A hand-over with a word the decoder missed because it was off is
+			-- skipped: decoding starts with the next one.
+			CD_DOWNLOAD_OLD <= CD_DOWNLOAD;
+			if CD_DOWNLOAD = '1' and CD_DOWNLOAD_OLD = '0' then
+				WORD_CNT <= (others => '0');
+				RAM_POS <= (others => '0');
+				CD_SKIP <= '0';
+			end if;
+			if CD_DOWNLOAD = '1' and CD_WR = '1' and CTRL0(DECEN) = '0' then
+				CD_SKIP <= '1';
+			end if;
 			if EN = '1' then
 				if REG_WR = '1' then
 					case AR is
@@ -338,7 +357,7 @@ begin
 			
 				if CTRL0(DECEN) = '1' then
 					CD_WR_OLD <= CD_WR;
-					if CD_WR = '1' and CD_WR_OLD = '0' then
+					if CD_WR = '1' and CD_WR_OLD = '0' and CD_SKIP = '0' then
 						DEC_DAT <= CD_DI;
 						DEC_POS <= RAM_POS;
 					
