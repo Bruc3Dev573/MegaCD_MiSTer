@@ -1090,10 +1090,13 @@ wire        Z80_IO_PRE = ~Z80_MREQ_N & Z80_RFSH_N;
 wire Z80_M1_N;
 wire Z80_HALT_N;
 wire Z80_INST_BOUND;
+// Engage at an edge without Z80_CLKENp: at an edge with it, T80 leaves the state the
+// condition shows (T2 of the fetch, or BUSAK when the bus request has ended) while the
+// freeze takes effect only at the next edge.
 reg ss_z80_freeze_eng;
 always @(posedge MCLK) begin
-	if(!SS_FREEZE)                                           ss_z80_freeze_eng <= 0;
-	else if(Z80_INST_BOUND || ~Z80_RESET_N || ~Z80_BUSAK_N)  ss_z80_freeze_eng <= 1;
+	if(!SS_FREEZE)                                                       ss_z80_freeze_eng <= 0;
+	else if(~Z80_RESET_N || ((Z80_INST_BOUND || ~Z80_BUSAK_N) && ~Z80_CLKENp)) ss_z80_freeze_eng <= 1;
 end
 assign SS_Z80_FROZEN = ss_z80_freeze_eng;
 assign SS_Z80_HALT = ~Z80_HALT_N;
