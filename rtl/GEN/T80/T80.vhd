@@ -120,10 +120,18 @@ entity T80 is
 		out0       : in  std_logic := '0';  -- 0 => OUT(C),0, 1 => OUT(C),255
 		REG        : out std_logic_vector(211 downto 0); -- IFF2, IFF1, IM, IY, HL', DE', BC', IX, HL, DE, BC, PC, SP, R, I, F', A', F, A
 		InstBound  : out std_logic;
+		-- With BUSAK_n low (bit 0), the state of the instruction the bus request stopped, which
+		-- REG does not hold. Bits: 0 BUSAK, 1 bus request, 4-2 MCycle, 7-5 TState, 10-8 Pre_XY_F_M,
+		-- 13-11 MCycles, 14 IntCycle, 15 NMICycle, 23-16 IR, 25-24 ISet, 27-26 XY_State, 28 XY_Ind,
+		-- 29 No_BTR, 30 EXX flip-flop, 31 IncDecZ, 47-32 address, 63-48 WZ, 71-64 data out,
+		-- 76-72 Read_To_Reg_r, 80-77 ALU_Op_r, 81 Save_ALU_r, 82 Arith16_r, 83 Z16_r,
+		-- 84 PreserveC_r, 85 BTR_r, 86 I_RXDD, 95-87 register file addresses C, B, A, 111-96 BusB, BusA.
+		SEQ        : out std_logic_vector(111 downto 0);
 
 		DIRSet     : in  std_logic := '0';
 		DIR        : in  std_logic_vector(211 downto 0) := (others => '0'); -- IFF2, IFF1, IM, IY, HL', DE', BC', IX, HL, DE, BC, PC, SP, R, I, F', A', F, A
-		DIRHalt    : in  std_logic := '0'  -- HALT state, restored with DIRSet (HALT_n is its output)
+		DIRHalt    : in  std_logic := '0'; -- HALT state, restored with DIRSet (HALT_n is its output)
+		DIRSeq     : in  std_logic_vector(111 downto 0) := (others => '0') -- SEQ, restored with DIRSet if bit 0 is set
 	);
 end T80;
 
@@ -258,12 +266,34 @@ architecture rtl of T80 is
 	signal Halt                 : std_logic;
 	signal XYbit_undoc          : std_logic;
 	signal DOR                  : std_logic_vector(127 downto 0);
+	-- The address and data out registers, read by SEQ (an out port cannot be read in VHDL-93).
+	signal A_i                  : std_logic_vector(15 downto 0);
+	signal DO_i                 : std_logic_vector(7 downto 0);
+
+	-- A register file address of SEQ for the restored core: DIRSet loads the BC, DE and HL the
+	-- program sees into bank 0 and clears the EXX flip-flop, so an address of BC, DE or HL taken
+	-- with the flip-flop at alt goes to the other bank. IX and IY (low bits 11) stay.
+	function SeqRegAddr(addr : std_logic_vector(2 downto 0); alt : std_logic) return std_logic_vector is
+	begin
+		if addr(1 downto 0) = "11" then
+			return addr;
+		end if;
+		return (addr(2) xor alt) & addr(1 downto 0);
+	end function;
 
 begin
 
 	REG <= IntE_FF2 & IntE_FF1 & IStatus & DOR & std_logic_vector(PC) & std_logic_vector(SP) & std_logic_vector(R) & I & Fp & Ap & F & ACC when Alternate = '0'
 			 else IntE_FF2 & IntE_FF1 & IStatus & DOR(127 downto 112) & DOR(47 downto 0) & DOR(63 downto 48) & DOR(111 downto 64) &
 						std_logic_vector(PC) & std_logic_vector(SP) & std_logic_vector(R) & I & Fp & Ap & F & ACC;
+
+	A <= A_i;
+	DO <= DO_i;
+
+	SEQ <= BusB & BusA & RegAddrC & RegAddrB_r & RegAddrA_r & I_RXDD & BTR_r & PreserveC_r & Z16_r & Arith16_r &
+	       Save_ALU_r & ALU_Op_r & Read_To_Reg_r & DO_i & WZ & A_i & IncDecZ & Alternate & No_BTR & XY_Ind & XY_State &
+	       ISet & IR & NMICycle & IntCycle & MCycles & Pre_XY_F_M & std_logic_vector(TState) & MCycle & BusReq_s &
+	       (BusAck and RESET_n);
 
 	mcode : work.T80_MCode
 		generic map(
@@ -377,14 +407,14 @@ begin
 	begin
 		if RESET_n = '0' then
 			PC <= (others => '0');  -- Program Counter
-			A <= (others => '0');
+			A_i <= (others => '0');
 			WZ <= (others => '0');
 			IR <= "00000000";
 			ISet <= "00";
 			XY_State <= "00";
 			IStatus <= "00";
 			MCycles <= "000";
-			DO <= "00000000";
+			DO_i <= "00000000";
 
 			ACC <= (others => '1');
 			F <= (others => '1');
@@ -415,7 +445,7 @@ begin
 				R   <= unsigned(DIR(47 downto 40));
 				SP  <= unsigned(DIR(63 downto 48));
 				PC  <= unsigned(DIR(79 downto 64));
-				A   <= DIR(79 downto 64);
+				A_i <= DIR(79 downto 64);
 				IStatus <= DIR(209 downto 208);
 				-- REG gives BC, DE, HL and their primes as the program sees them, whatever
 				-- the EXX flip-flop, and T80_Reg loads them into banks 0 and 1, so the
@@ -432,6 +462,26 @@ begin
 				Read_To_Reg_r <= "00000";
 				Save_ALU_r <= '0';
 				ALU_Op_r <= "0000";
+				-- A core saved with the bus acknowledged resumes the instruction it was in, at
+				-- the last T state of the machine cycle the bus request stopped (see SEQ).
+				if DIRSeq(0) = '1' then
+					IR <= DIRSeq(23 downto 16);
+					ISet <= DIRSeq(25 downto 24);
+					XY_State <= DIRSeq(27 downto 26);
+					XY_Ind <= DIRSeq(28);
+					A_i <= DIRSeq(47 downto 32);
+					WZ <= DIRSeq(63 downto 48);
+					DO_i <= DIRSeq(71 downto 64);
+					Read_To_Reg_r <= DIRSeq(76 downto 72);
+					ALU_Op_r <= DIRSeq(80 downto 77);
+					Save_ALU_r <= DIRSeq(81);
+					Arith16_r <= DIRSeq(82);
+					Z16_r <= DIRSeq(83);
+					PreserveC_r <= DIRSeq(84);
+					BTR_r <= DIRSeq(85);
+					I_RXDD <= DIRSeq(86);
+					MCycles <= DIRSeq(13 downto 11);
+				end if;
 
 			elsif ClkEn = '1' then
 				ALU_Op_r <= "0000";
@@ -457,8 +507,8 @@ begin
 
 					if TState = 2 and Wait_n = '1' then
 						if Mode < 2 then
-							A(7 downto 0) <= std_logic_vector(R);
-							A(15 downto 8) <= I;
+							A_i(7 downto 0) <= std_logic_vector(R);
+							A_i(15 downto 8) <= I;
 							R(6 downto 0) <= R(6 downto 0) + 1;
 						end if;
 
@@ -508,57 +558,57 @@ begin
 					if T_Res = '1' then
 						BTR_r <= (I_BT or I_BC or I_BTR) and not No_BTR;
 						if Jump = '1' then
-							A(15 downto 8) <= DI_Reg;
-							A(7 downto 0) <= WZ(7 downto 0);
+							A_i(15 downto 8) <= DI_Reg;
+							A_i(7 downto 0) <= WZ(7 downto 0);
 							PC(15 downto 8) <= unsigned(DI_Reg);
 							PC(7 downto 0) <= unsigned(WZ(7 downto 0));
 						elsif JumpXY = '1' then
-							A <= RegBusC;
+							A_i <= RegBusC;
 							PC <= unsigned(RegBusC);
 						elsif Call = '1' or RstP = '1' then
-							A <= WZ;
+							A_i <= WZ;
 							PC <= unsigned(WZ);
 						elsif MCycle = MCycles and NMICycle = '1' then
-							A <= "0000000001100110";
+							A_i <= "0000000001100110";
 							PC <= "0000000001100110";
 						elsif MCycle = "011" and IntCycle = '1' and IStatus = "10" then
-							A(15 downto 8) <= I;
-							A(7 downto 0) <= WZ(7 downto 0);
+							A_i(15 downto 8) <= I;
+							A_i(7 downto 0) <= WZ(7 downto 0);
 							PC(15 downto 8) <= unsigned(I);
 							PC(7 downto 0) <= unsigned(WZ(7 downto 0));
 						else
 							case Set_Addr_To is
 							when aXY =>
 								if XY_State = "00" then
-									A <= RegBusC;
+									A_i <= RegBusC;
 								else
 									if NextIs_XY_Fetch = '1' then
-										A <= std_logic_vector(PC);
+										A_i <= std_logic_vector(PC);
 									else
-										A <= WZ;
+										A_i <= WZ;
 									end if;
 								end if;
 							when aIOA =>
 								if Mode = 3 then
 									-- Memory map I/O on GBZ80
-									A(15 downto 8) <= (others => '1');
+									A_i(15 downto 8) <= (others => '1');
 								elsif Mode = 2 then
 									-- Duplicate I/O address on 8080
-									A(15 downto 8) <= DI_Reg;
+									A_i(15 downto 8) <= DI_Reg;
 								else
-									A(15 downto 8) <= ACC;
+									A_i(15 downto 8) <= ACC;
 								end if;
-								A(7 downto 0) <= DI_Reg;
+								A_i(7 downto 0) <= DI_Reg;
 								WZ <= (ACC & DI_Reg) + "1";
 							when aSP =>
-								A <= std_logic_vector(SP);
+								A_i <= std_logic_vector(SP);
 							when aBC =>
 								if Mode = 3 and IORQ_i = '1' then
 									-- Memory map I/O on GBZ80
-									A(15 downto 8) <= (others => '1');
-									A(7 downto 0) <= RegBusC(7 downto 0);
+									A_i(15 downto 8) <= (others => '1');
+									A_i(7 downto 0) <= RegBusC(7 downto 0);
 								else
-									A <= RegBusC;
+									A_i <= RegBusC;
 									if SetWZ = "01" then
 										WZ <= RegBusC + "1";
 									end if;
@@ -568,24 +618,24 @@ begin
 									end if;
 								end if;
 							when aDE =>
-								A <= RegBusC;
+								A_i <= RegBusC;
 								if SetWZ = "10" then
 									WZ(7 downto 0) <= RegBusC(7 downto 0) + "1";
 									WZ(15 downto 8) <= ACC;
 								end if;
 							when aZI =>
 								if Inc_WZ = '1' then
-									A <= std_logic_vector(unsigned(WZ) + 1);
+									A_i <= std_logic_vector(unsigned(WZ) + 1);
 								else
-									A(15 downto 8) <= DI_Reg;
-									A(7 downto 0) <= WZ(7 downto 0);
+									A_i(15 downto 8) <= DI_Reg;
+									A_i(7 downto 0) <= WZ(7 downto 0);
 									if SetWZ = "10" then
 										WZ(7 downto 0) <= WZ(7 downto 0) + "1";
 										WZ(15 downto 8) <= ACC;
 									end if;
 								end if;
 							when others =>
-								A <= std_logic_vector(PC);
+								A_i <= std_logic_vector(PC);
 							end case;
 						end if;
 
@@ -768,15 +818,15 @@ begin
 					-- Keep D0 from M3 for RLD/RRD (Sorgelig)
 					I_RXDD <= I_RLD or I_RRD;
 					if I_RXDD='0' then
-						DO <= BusB;
+						DO_i <= BusB;
 					end if;
 					if I_RLD = '1' then
-						DO(3 downto 0) <= BusA(3 downto 0);
-						DO(7 downto 4) <= BusB(3 downto 0);
+						DO_i(3 downto 0) <= BusA(3 downto 0);
+						DO_i(7 downto 4) <= BusB(3 downto 0);
 					end if;
 					if I_RRD = '1' then
-						DO(3 downto 0) <= BusB(7 downto 4);
-						DO(7 downto 4) <= BusA(3 downto 0);
+						DO_i(3 downto 0) <= BusB(7 downto 4);
+						DO_i(7 downto 4) <= BusA(3 downto 0);
 					end if;
 				end if;
 
@@ -810,7 +860,7 @@ begin
 					when "10111" =>
 						ACC <= Save_Mux;
 					when "10110" =>
-						DO <= Save_Mux;
+						DO_i <= Save_Mux;
 					when "11000" =>
 						SP(7 downto 0) <= unsigned(Save_Mux);
 					when "11001" =>
@@ -820,7 +870,7 @@ begin
 					when others =>
 					end case;
 					if XYbit_undoc='1' then
-						DO <= ALU_Q;
+						DO_i <= ALU_Q;
 					end if;
 				end if;
 			end if;
@@ -835,7 +885,12 @@ begin
 	process (CLK_n)
 	begin
 		if rising_edge(CLK_n) then
-			if ClkEn = '1' then
+			if DIRSet = '1' and DIRSeq(0) = '1' then
+				RegAddrA_r <= SeqRegAddr(DIRSeq(89 downto 87), DIRSeq(30));
+				RegAddrB_r <= SeqRegAddr(DIRSeq(92 downto 90), DIRSeq(30));
+				RegAddrC <= SeqRegAddr(DIRSeq(95 downto 93), DIRSeq(30));
+				IncDecZ <= DIRSeq(31);
+			elsif ClkEn = '1' then
 				-- Bus A / Write
 				RegAddrA_r <= Alternate & Set_BusA_To(2 downto 1);
 				if XY_Ind = '0' and XY_State /= "00" and Set_BusA_To(2 downto 1) = "10" then
@@ -975,7 +1030,10 @@ begin
 	process (CLK_n)
 	begin
 		if rising_edge(CLK_n) then
-			if ClkEn = '1' then
+			if DIRSet = '1' and DIRSeq(0) = '1' then
+				BusA <= DIRSeq(103 downto 96);
+				BusB <= DIRSeq(111 downto 104);
+			elsif ClkEn = '1' then
 				case Set_BusB_To is
 				when "0111" =>
 					BusB <= ACC;
@@ -1114,6 +1172,19 @@ begin
 				Auto_Wait_t1 <= '0';
 				Auto_Wait_t2 <= '0';
 				Halt_FF <= DIRHalt;
+				-- Or, saved with the bus acknowledged, the last T state of the machine cycle
+				-- the bus request stopped, with the bus still acknowledged. M1_n is high there.
+				if DIRSeq(0) = '1' then
+					MCycle <= DIRSeq(4 downto 2);
+					TState <= unsigned(DIRSeq(7 downto 5));
+					Pre_XY_F_M <= DIRSeq(10 downto 8);
+					M1_n <= '1';
+					IntCycle <= DIRSeq(14);
+					NMICycle <= DIRSeq(15);
+					No_BTR <= DIRSeq(29);
+					BusReq_s <= DIRSeq(1);
+					BusAck <= '1';
+				end if;
 			else
 				if NMI_n = '0' and OldNMI_n = '1' then
 					NMI_s <= '1';

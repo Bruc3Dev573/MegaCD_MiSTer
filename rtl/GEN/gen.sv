@@ -174,13 +174,16 @@ module gen
 	output        SS_FM_REPLAYING,
 
 	// Z80 architectural state (region Z80_REGS): the T80 registers, 212 bits over words 0-6,
-	// and in word 7 the HALT state, the bank register, the bus request and the reset.
+	// in word 7 the HALT state, the bank register, the bus request and the reset, and in
+	// words 8-11 the rest of an instruction the bus request stopped.
 	output        SS_Z80_FROZEN,
 	output [211:0] SS_Z80_REG,
 	input  [211:0] SS_Z80_DIR,
 	input         SS_Z80_DIRSET,
 	output        SS_Z80_HALT,
 	input         SS_Z80_HALT_DIR,  // applied with SS_Z80_DIRSET
+	output [119:0] SS_Z80_SEQ,      // T80 SEQ: with BUSAK low, the instruction the bus request stopped
+	input  [119:0] SS_Z80_SEQ_DIR,  // applied with SS_Z80_DIRSET if bit 0 (BUSAK) is set
 	output  [8:0] SS_Z80_BAR,       // bank register, A23-A15
 	input   [8:0] SS_Z80_BAR_DIR,
 	output  [1:0] SS_Z80_CTRL,      // Z80 reset and bus request lines, A11200 and A11100
@@ -1080,8 +1083,10 @@ wire        Z80_IO_PRE = ~Z80_MREQ_N & Z80_RFSH_N;
 
 //T80s #(.T2Write(1)) Z80
 // Capture the Z80 state between two instructions (T2 of the opcode fetch of a new one,
-// see InstBound in T80), in reset, or with the bus given to the 68000.
-// T80 provides the 212-bit REG/DIRSet/DIR state interface. A DIRSet restarts the fetch.
+// see InstBound in T80), in reset, or with the bus given to the 68000, where T80 stops at
+// the end of any machine cycle and SEQ holds the rest of the instruction.
+// T80 provides the 212-bit REG/DIRSet/DIR state interface. A DIRSet restarts the fetch,
+// or with SEQ_DIR resumes the instruction the bus request stopped.
 wire Z80_M1_N;
 wire Z80_HALT_N;
 wire Z80_INST_BOUND;
@@ -1106,9 +1111,11 @@ T80pa Z80
 	.HALT_n(Z80_HALT_N),
 	.REG(SS_Z80_REG),
 	.InstBound(Z80_INST_BOUND),
+	.SEQ(SS_Z80_SEQ),
 	.DIRSet(SS_Z80_DIRSET),
 	.DIR(SS_Z80_DIR),
 	.DIRHalt(SS_Z80_HALT_DIR),
+	.DIRSeq(SS_Z80_SEQ_DIR),
 //	.CEN(Z80_CLKENn),
 	.BUSRQ_n(Z80_BUSRQ_N),
 	.BUSAK_n(Z80_BUSAK_N),

@@ -646,6 +646,8 @@ gen gen
 	.SS_Z80_DIRSET(ss_z80_dirset),
 	.SS_Z80_HALT(ss_z80_halt),
 	.SS_Z80_HALT_DIR(ss_z80_halt_dir),
+	.SS_Z80_SEQ(ss_z80_seq),
+	.SS_Z80_SEQ_DIR(ss_z80_seq_dir),
 	.SS_Z80_BAR(ss_z80_bar),
 	.SS_Z80_BAR_DIR(ss_z80_bar_dir),
 	.SS_Z80_CTRL(ss_z80_ctrl),
@@ -656,6 +658,7 @@ gen gen
 wire         ss_z80_frozen;
 wire [211:0] ss_z80_reg;
 wire         ss_z80_halt;
+wire [119:0] ss_z80_seq;
 wire   [8:0] ss_z80_bar;
 wire   [1:0] ss_z80_ctrl;
 
@@ -1942,7 +1945,10 @@ end
 //   bits 8-0: bank register (A23-A15)
 //   bit 9:    BUSRQ_N, bit 10: RESET_N (A11100 and A11200)
 //   bit 11:   HALT
-// Words 8-31 are spare. The restore is one DIRSet pulse, two clocks after word 7: T80
+//   bit 12:   words 8-11 hold T80 SEQ (bits 119-0), the rest of an instruction the bus
+//             request stopped (BUSAK low, SEQ bit 0). Older images, without them, resume
+//             at the next opcode fetch as before.
+// Words 12-31 are spare. The restore is one DIRSet pulse, two clocks after word 11: T80
 // latches the whole register file at once, and a Z80 taken out of reset by word 7 must be
 // out of it by then.
 wire ss_sel_z80 = `SS_IN(SS_OFF_Z80_REGS, SS_Z80_REGS_SIZE);
@@ -1953,6 +1959,8 @@ reg         ss_z80_halt_dir_r;
 reg   [8:0] ss_z80_bar_dir_r;
 reg   [1:0] ss_z80_ctrl_dir_r;
 reg         ss_z80_ext_set_r;
+reg [119:0] ss_z80_seq_dir_r;
+reg         ss_z80_seq_ok;
 reg         ss_z80_dirset_d, ss_z80_dirset_r;
 always @(posedge clk_sys) begin
 	ss_z80_dirset_d <= 0;
@@ -1974,6 +1982,13 @@ always @(posedge clk_sys) begin
 				ss_z80_bar_dir_r  <= ss_state_dout[8:0];
 				ss_z80_ctrl_dir_r <= ss_state_dout[10:9];
 				ss_z80_ext_set_r  <= ss_state_dout[31];
+				ss_z80_seq_ok     <= ss_state_dout[12];
+			end
+			5'd8:  ss_z80_seq_dir_r[ 31: 0] <= ss_state_dout;
+			5'd9:  ss_z80_seq_dir_r[ 63:32] <= ss_state_dout;
+			5'd10: ss_z80_seq_dir_r[ 95:64] <= ss_state_dout;
+			5'd11: begin
+				ss_z80_seq_dir_r[119:96] <= ss_state_dout[23:0];
 				ss_z80_dirset_d <= 1;   // Last word, latch all registers.
 			end
 			default: ;
@@ -1981,6 +1996,7 @@ always @(posedge clk_sys) begin
 	end
 end
 wire [211:0] ss_z80_dir     = ss_z80_dir_r;
+wire [119:0] ss_z80_seq_dir  = ss_z80_seq_ok ? ss_z80_seq_dir_r : 120'd0;
 wire         ss_z80_halt_dir = ss_z80_halt_dir_r;
 wire   [8:0] ss_z80_bar_dir = ss_z80_bar_dir_r;
 wire   [1:0] ss_z80_ctrl_dir = ss_z80_ctrl_dir_r;
@@ -2105,7 +2121,11 @@ always @(posedge clk_sys) begin
 		                  (ss_z80_word == 5'd4) ? ss_z80_reg[159:128] :
 		                  (ss_z80_word == 5'd5) ? ss_z80_reg[191:160] :
 		                  (ss_z80_word == 5'd6) ? {12'd0, ss_z80_reg[211:192]} :
-		                  (ss_z80_word == 5'd7) ? {1'b1, 19'd0, ss_z80_halt, ss_z80_ctrl, ss_z80_bar} : 32'd0;
+		                  (ss_z80_word == 5'd7) ? {1'b1, 18'd0, 1'b1, ss_z80_halt, ss_z80_ctrl, ss_z80_bar} :
+		                  (ss_z80_word == 5'd8) ? ss_z80_seq[ 31: 0] :
+		                  (ss_z80_word == 5'd9) ? ss_z80_seq[ 63:32] :
+		                  (ss_z80_word == 5'd10) ? ss_z80_seq[ 95:64] :
+		                  (ss_z80_word == 5'd11) ? {8'd0, ss_z80_seq[119:96]} : 32'd0;
 	else case(ss_state_addr)
 		0: ss_state_din_r <= SS_MAGIC;
 		1: ss_state_din_r <= {SS_VERSION[7:0], SS_FULL_SIZE[23:0]};

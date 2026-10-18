@@ -84,9 +84,11 @@ entity T80pa is
 		DO          : out std_logic_vector(7 downto 0);
 		REG         : out std_logic_vector(211 downto 0); -- IFF2, IFF1, IM, IY, HL', DE', BC', IX, HL, DE, BC, PC, SP, R, I, F', A', F, A
 		InstBound   : out std_logic;                      -- T2 of the opcode fetch of a new instruction (see T80)
+		SEQ         : out std_logic_vector(119 downto 0); -- data input latch (119-112) and T80 SEQ
 		DIRSet      : in  std_logic := '0';
 		DIR         : in  std_logic_vector(211 downto 0) := (others => '0'); -- IFF2, IFF1, IM, IY, HL', DE', BC', IX, HL, DE, BC, PC, SP, R, I, F', A', F, A
-		DIRHalt     : in  std_logic := '0'                -- HALT state, restored with DIRSet
+		DIRHalt     : in  std_logic := '0';               -- HALT state, restored with DIRSet
+		DIRSeq      : in  std_logic_vector(119 downto 0) := (others => '0') -- SEQ, restored with DIRSet if bit 0 is set
 	);
 end T80pa;
 
@@ -110,6 +112,7 @@ begin
 	A <= A_int when NoRead = '0' or Write = '1' else A_last;
 
 	BUSAK_n <= BUSAK;
+	SEQ(119 downto 112) <= DI_Reg;
 
 	u0 : work.T80
 		generic map(
@@ -141,9 +144,11 @@ begin
 			OUT0    => OUT0,
 			IntCycle_n => IntCycle_n,
 			InstBound => InstBound,
+			SEQ     => SEQ(111 downto 0),
 			DIRSet  => DIRSet,
 			DIR     => DIR,
-			DIRHalt => DIRHalt
+			DIRHalt => DIRHalt,
+			DIRSeq  => DIRSeq(111 downto 0)
 		);
 
 	process(CLK)
@@ -166,6 +171,11 @@ begin
 				MREQ_n  <= '1';
 				IntCycleD_n <= "11";
 				CEN_pol <= '1';
+				-- Saved with the bus acknowledged, the core resumes the instruction the bus
+				-- request stopped (see SEQ in T80), with the data it read in that instruction.
+				if DIRSeq(0) = '1' then
+					DI_Reg <= DIRSeq(119 downto 112);
+				end if;
 			elsif CEN_p = '1' and CEN_pol = '0' then
 				CEN_pol <= '1';
 				if MCycle = "001" then
