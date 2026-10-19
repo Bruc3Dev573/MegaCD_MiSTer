@@ -24,16 +24,27 @@ module jt12_eg_cnt(
 	input clk,
 	input clk_en /* synthesis direct_enable */,
 	input zero,
-	output reg [14:0] eg_cnt
+	output reg [14:0] eg_cnt,
+	// Savestate scan chain, see jt12_sh.v
+	input		ss_scan,
+	input		ss_si,
+	output		ss_so,
+	output [12:0] ss_n
 );
 
 reg	[1:0] eg_cnt_base;
+
+wire [16:0] ss_q = { eg_cnt_base, eg_cnt };
+assign ss_so = ss_q[16];
+assign ss_n  = 13'd17;
 
 always @(posedge clk, posedge rst) begin : envelope_counter
 	if( rst ) begin
 		eg_cnt_base	<= 2'd0;
 		eg_cnt		<=15'd0;
 	end
+	else if( ss_scan )
+		{ eg_cnt_base, eg_cnt } <= { ss_q[15:0], ss_si };
 	else begin
 		if( zero && clk_en ) begin
 			// envelope counter increases every 3 output samples,

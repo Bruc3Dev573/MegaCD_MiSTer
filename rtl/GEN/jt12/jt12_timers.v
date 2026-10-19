@@ -39,7 +39,13 @@ module jt12_timers(
   output    flag_A,
   output    flag_B,
   output    overflow_A,
-  output    irq_n
+  output    irq_n,
+  // Savestate. ss_hold stops the timers, ss_scan shifts the scan chain (jt12_sh.v)
+  input         ss_hold,
+  input         ss_scan,
+  input         ss_si,
+  output        ss_so,
+  output [12:0] ss_n
 );
 
 parameter num_ch = 6;
@@ -59,6 +65,10 @@ end
 
 wire zero       = num_ch == 6 ? zero : (zero2&zero);
 */
+wire        ss_c_A;
+wire [12:0] ss_n_A, ss_n_B;
+assign ss_n = ss_n_A + ss_n_B;
+
 jt12_timer #(.CW(10)) timer_A(
     .clk        ( clk         ),
     .rst        ( rst         ),
@@ -68,7 +78,12 @@ jt12_timer #(.CW(10)) timer_A(
     .load       ( load_A      ),
     .clr_flag   ( clr_flag_A  ),
     .flag       ( flag_A      ),
-    .overflow   ( overflow_A  )
+    .overflow   ( overflow_A  ),
+    .ss_hold    ( ss_hold     ),
+    .ss_scan    ( ss_scan     ),
+    .ss_si      ( ss_si       ),
+    .ss_so      ( ss_c_A      ),
+    .ss_n       ( ss_n_A      )
 );
 
 jt12_timer #(.CW(8),.FREE_EN(1)) timer_B(
@@ -80,7 +95,12 @@ jt12_timer #(.CW(8),.FREE_EN(1)) timer_B(
     .load       ( load_B      ),
     .clr_flag   ( clr_flag_B  ),
     .flag       ( flag_B      ),
-    .overflow   (             )
+    .overflow   (             ),
+    .ss_hold    ( ss_hold     ),
+    .ss_scan    ( ss_scan     ),
+    .ss_si      ( ss_c_A      ),
+    .ss_so      ( ss_so       ),
+    .ss_n       ( ss_n_B      )
 );
 
 endmodule
@@ -98,7 +118,13 @@ module jt12_timer #(parameter
     input   load,
     input   clr_flag,
     output reg flag,
-    output reg overflow
+    output reg overflow,
+    // Savestate, see jt12_timers
+    input   ss_hold,
+    input   ss_scan,
+    input   ss_si,
+    output  ss_so,
+    output [12:0] ss_n
 );
 /* verilator lint_off WIDTH */
 reg          load_l;
@@ -106,10 +132,17 @@ reg [CW-1:0] cnt, next;
 reg [FW-1:0] free_cnt, free_next;
 reg          free_ov;
 
+// Savestate scan chain: flag, load_l and cnt, free_cnt
+wire [CW:0]   ss_q1 = { load_l, cnt };
+assign ss_so = free_cnt[FW-1];
+assign ss_n  = 1 + CW + 1 + FW;
+
 always@(posedge clk, posedge rst)
     if( rst )
         flag <= 1'b0;
-    else /*if(cen)*/ begin
+    else if( ss_scan )
+        flag <= ss_si;
+    else if( !ss_hold ) begin
         if( clr_flag )
             flag <= 1'b0;
         else if( cen && zero && load && overflow ) flag<=1'b1;
@@ -121,16 +154,22 @@ always @(*) begin
 end
 
 always @(posedge clk) begin
+    if( ss_scan )
+        { load_l, cnt } <= { ss_q1[CW-1:0], flag };
+    else if( !ss_hold ) begin
     load_l <= load;
     if( !load_l && load ) begin
         cnt <= start_value;
     end else if( cen && zero && load )
         cnt <= overflow ? start_value : next;
+    end
 end
 
 // Free running counter
 always @(posedge clk) begin
-    if( rst ) begin
+    if( ss_scan )
+        free_cnt <= { free_cnt[FW-2:0], ss_q1[CW] };
+    else if( rst ) begin
         free_cnt <= 0;
     end else if( cen && zero ) begin
         free_cnt <= free_cnt+1'd1;

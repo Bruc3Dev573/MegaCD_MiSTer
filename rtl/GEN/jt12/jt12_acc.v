@@ -52,7 +52,12 @@ module jt12_acc(
     input   signed [8:0] pcm,
     // combined output
     output reg signed   [15:0]  left,
-    output reg signed   [15:0]  right
+    output reg signed   [15:0]  right,
+    // Savestate scan chain, see jt12_sh.v
+    input               ss_scan,
+    input               ss_si,
+    output              ss_so,
+    output      [12:0]  ss_n
 );
 
 reg sum_en;
@@ -68,7 +73,16 @@ end
 
 reg pcm_sum;
 
-always @(posedge clk) if(clk_en)
+// Savestate scan chain: pcm_sum, the accumulator, the output registers
+wire        ss_c_acc;
+wire [12:0] ss_n_acc;
+wire [35:0] ss_q;
+assign ss_so = ss_q[35];
+assign ss_n  = 13'd1 + ss_n_acc + 13'd36;
+
+always @(posedge clk) if( ss_scan )
+    pcm_sum <= ss_si;
+else if(clk_en)
     if( zero ) pcm_sum <= 1'b1;
     else if( ch6op ) pcm_sum <= 1'b0;
 
@@ -92,7 +106,11 @@ jt12_single_acc #(.win(9),.wout(9)) u_acc(
     .sum_en     ( sum_or_pcm     ),
     .zero       ( zero           ),
     // .snd        ( pre_left       )
-    .snd        ( acc_out        )
+    .snd        ( acc_out        ),
+    .ss_scan    ( ss_scan        ),
+    .ss_si      ( pcm_sum        ),
+    .ss_so      ( ss_c_acc       ),
+    .ss_n       ( ss_n_acc       )
 );
 
 // jt12_single_acc #(.win(9),.wout(12)) u_right(
@@ -123,7 +141,11 @@ reg [1:0] rl_latch, rl_old;
 wire signed [4:0] ladder_left  = ~ladder ? 5'd0 : (acc_expand >= 0 ? 5'd4 : (rl_old[1] ? -5'd3 : -5'd4));
 wire signed [4:0] ladder_right = ~ladder ? 5'd0 : (acc_expand >= 0 ? 5'd4 : (rl_old[0] ? -5'd3 : -5'd4));
 
-always @(posedge clk) if(clk_en) begin
+assign ss_q = { rl_latch, rl_old, left, right };
+
+always @(posedge clk) if( ss_scan )
+    { rl_latch, rl_old, left, right } <= { ss_q[34:0], ss_c_acc };
+else if(clk_en) begin
     if (channel_en)
         rl_latch <= rl;
     if (zero)

@@ -26,10 +26,20 @@ module jt12_sh_rst #(parameter width=5, stages=32, rstval=1'b0 )
 	input 					clk,
 	input					clk_en /* synthesis direct_enable */,
 	input		[width-1:0]	din,
-   	output		[width-1:0]	drop
+   	output		[width-1:0]	drop,
+	// Savestate scan chain, as in jt12_sh
+	input					ss_scan,
+	input					ss_si,
+	output					ss_so,
+	output			[12:0]	ss_n
 );
 
 reg [stages-1:0] bits[width-1:0];
+
+wire [width:0]   ss_lanes = { drop, ss_si };
+wire [width-1:0] din_m    = ss_scan ? ss_lanes[width-1:0] : din;
+assign ss_so = drop[width-1];
+assign ss_n  = width*stages;
 
 genvar i;
 integer k;
@@ -45,8 +55,8 @@ generate
 		always @(posedge clk, posedge rst) 
 			if( rst ) begin
 				bits[i] <= {stages{rstval}};
-			end else if(clk_en) begin
-				bits[i] <= {bits[i][stages-2:0], din[i]};
+			end else if(clk_en | ss_scan) begin
+				bits[i] <= {bits[i][stages-2:0], din_m[i]};
 			end
 		assign drop[i] = bits[i][stages-1];
 	end

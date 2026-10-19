@@ -47,7 +47,14 @@ module jt12_op(
     input           zero,
     
     output  signed [ 8:0]   op_result,
-    output  signed [13:0]   full_result
+    output  signed [13:0]   full_result,
+    // Savestate scan chain (jt12_sh.v). ss_commit reloads the ROM address
+    // registers after a scan.
+    input           ss_scan,
+    input           ss_si,
+    output          ss_so,
+    output  [12:0]  ss_n,
+    input           ss_commit
 );
 
 parameter num_ch = 6;
@@ -83,12 +90,28 @@ always @(*)
         prev2_din     = s1_enters ? op_result_internal : prev2;
     end
 
+// Savestate scan chain: the feedback buffers, the pipeline registers in order,
+// with the ROM address copies of jt12_logsin and jt12_exprom.
+wire        ss_c_p1, ss_c_pp1, ss_c_p2, ss_c_pm, ss_c_sin, ss_c_exp;
+wire [12:0] ss_n_p1, ss_n_pp1, ss_n_p2, ss_n_pm, ss_n_sin, ss_n_exp;
+wire [15:0] ss_q1;
+wire [ 4:0] ss_q3;
+wire [14:0] ss_q4;
+wire [27:0] ss_q5;
+assign ss_so = ss_q5[27];
+assign ss_n  = ss_n_p1 + ss_n_pp1 + ss_n_p2 + 13'd16 + ss_n_pm + 13'd1 + ss_n_sin
+             + 13'd5 + ss_n_exp + 13'd15 + 13'd28;
+
 jt12_sh #( .width(14), .stages(num_ch)) prev1_buffer(
 //  .rst    ( rst       ),
     .clk    ( clk       ),
     .clk_en ( clk_en    ),
     .din    ( prev1_din ),
-    .drop   ( prev1     )
+    .drop   ( prev1     ),
+    .ss_scan( ss_scan   ),
+    .ss_si  ( ss_si     ),
+    .ss_so  ( ss_c_p1   ),
+    .ss_n   ( ss_n_p1   )
 );
 
 jt12_sh #( .width(14), .stages(num_ch)) prevprev1_buffer(
@@ -96,7 +119,11 @@ jt12_sh #( .width(14), .stages(num_ch)) prevprev1_buffer(
     .clk    ( clk           ),
     .clk_en ( clk_en        ),
     .din    ( prevprev1_din ),
-    .drop   ( prevprev1     )
+    .drop   ( prevprev1     ),
+    .ss_scan( ss_scan       ),
+    .ss_si  ( ss_c_p1       ),
+    .ss_so  ( ss_c_pp1      ),
+    .ss_n   ( ss_n_pp1      )
 );
 
 jt12_sh #( .width(14), .stages(num_ch)) prev2_buffer(
@@ -104,7 +131,11 @@ jt12_sh #( .width(14), .stages(num_ch)) prev2_buffer(
     .clk    ( clk       ),
     .clk_en ( clk_en    ),
     .din    ( prev2_din ),
-    .drop   ( prev2     )
+    .drop   ( prev2     ),
+    .ss_scan( ss_scan   ),
+    .ss_si  ( ss_c_pp1  ),
+    .ss_so  ( ss_c_p2   ),
+    .ss_n   ( ss_n_p2   )
 );
 
 
@@ -135,7 +166,11 @@ always @(*) begin
     ys = { y[13], y }; // sign-extend
 end
 
-always @(posedge clk) if( clk_en ) begin
+assign ss_q1 = { pm_preshift_II, s1_II };
+
+always @(posedge clk) if( ss_scan )
+    { pm_preshift_II, s1_II } <= { ss_q1[14:0], ss_c_p2 };
+else if( clk_en ) begin
     pm_preshift_II <= xs + ys; // carry is discarded
     s1_II <= s1_enters;
 end
@@ -174,7 +209,11 @@ end
             .clk    ( clk   ),
             .clk_en ( clk_en),
             .din    ( phasemod_II ),
-            .drop   ( phasemod_VIII )
+            .drop   ( phasemod_VIII ),
+            .ss_scan( ss_scan     ),
+            .ss_si  ( ss_q1[15]   ),
+            .ss_so  ( ss_c_pm     ),
+            .ss_n   ( ss_n_pm     )
         );
 //     else begin
 //         assign phasemod_VIII = phasemod_II;
@@ -195,7 +234,9 @@ always @(*) begin
     aux_VIII= phase[7:0] ^ {8{~phase[8]}};
 end
 
-always @(posedge clk) if( clk_en ) begin    
+always @(posedge clk) if( ss_scan )
+    signbit_IX <= ss_c_pm;
+else if( clk_en ) begin    
     signbit_IX <= phase[9];     
 end
 
@@ -205,7 +246,12 @@ jt12_logsin u_logsin (
     .clk    ( clk       ),
     .clk_en ( clk_en    ),
     .addr   ( aux_VIII[7:0] ),
-    .logsin ( logsin_IX )
+    .logsin ( logsin_IX ),
+    .ss_scan( ss_scan   ),
+    .ss_si  ( signbit_IX),
+    .ss_so  ( ss_c_sin  ),
+    .ss_n   ( ss_n_sin  ),
+    .ss_commit( ss_commit )
 );  
 
 
@@ -226,15 +272,28 @@ jt12_exprom u_exprom(
     .clk    ( clk       ),
     .clk_en ( clk_en    ),
     .addr   ( atten_internal_IX[7:0] ),
-    .exp    ( mantissa_X )
+    .exp    ( mantissa_X ),
+    .ss_scan( ss_scan   ),
+    .ss_si  ( ss_q3[4]  ),
+    .ss_so  ( ss_c_exp  ),
+    .ss_n   ( ss_n_exp  ),
+    .ss_commit( ss_commit )
 );
 
-always @(posedge clk) if( clk_en ) begin
+assign ss_q3 = { exponent_X, signbit_X };
+
+always @(posedge clk) if( ss_scan )
+    { exponent_X, signbit_X } <= { ss_q3[3:0], ss_c_sin };
+else if( clk_en ) begin
     exponent_X <= atten_internal_IX[11:8];    
     signbit_X  <= signbit_IX;    
 end
 
-always @(posedge clk) if( clk_en ) begin
+assign ss_q4 = { mantissa_XI, exponent_XI, signbit_XI };
+
+always @(posedge clk) if( ss_scan )
+    { mantissa_XI, exponent_XI, signbit_XI } <= { ss_q4[13:0], ss_c_exp };
+else if( clk_en ) begin
     mantissa_XI <= mantissa_X;
     exponent_XI <= exponent_X;
     signbit_XI  <= signbit_X;     
@@ -261,7 +320,11 @@ always @(*) begin
     endcase
 end
 
-always @(posedge clk) if( clk_en ) begin
+assign ss_q5 = { op_XII, op_result_internal };
+
+always @(posedge clk) if( ss_scan )
+    { op_XII, op_result_internal } <= { ss_q5[26:0], ss_q4[14] };
+else if( clk_en ) begin
     // REGISTER CYCLE 11
     op_XII <= ({ test_214, shifter_3 } ^ {14{signbit_XI}}) + {13'd0,signbit_XI};               
     // REGISTER CYCLE 12

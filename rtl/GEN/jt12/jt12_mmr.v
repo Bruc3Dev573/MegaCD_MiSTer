@@ -123,10 +123,21 @@ module jt12_mmr(
     output  [3:0]   psg_addr,
     output  [7:0]   psg_data,
     output  reg     psg_wr_n,
-    input   [7:0]   debug_bus
+    input   [7:0]   debug_bus,
+
+    // Savestate. ss_hold stops the chip, ss_scan shifts its scan chain (jt12_sh.v)
+    input           ss_hold,
+    input           ss_scan,
+    input           ss_si,
+    output          ss_so,
+    output  [12:0]  ss_n
 );
 
 parameter use_ssg=0, num_ch=6, use_pcm=1, use_adpcm=0, mask_div=1;
+
+wire        ss_c_div;
+wire  [5:0] ss_q2;
+wire [12:0] ss_n_div, ss_n_reg;
 
 jt12_div #(.use_ssg(use_ssg)) u_div (
     .rst            ( rst             ),
@@ -138,7 +149,12 @@ jt12_div #(.use_ssg(use_ssg)) u_div (
     .clk_en_ssg     ( clk_en_ssg      ),
     .clk_en_666     ( clk_en_666      ),
     .clk_en_111     ( clk_en_111      ),
-    .clk_en_55      ( clk_en_55       )
+    .clk_en_55      ( clk_en_55       ),
+    .ss_hold        ( ss_hold         ),
+    .ss_scan        ( ss_scan         ),
+    .ss_si          ( ss_q2[5]        ),
+    .ss_so          ( ss_c_div        ),
+    .ss_n           ( ss_n_div        )
 );
 
 reg [7:0]   selected_register;
@@ -184,7 +200,10 @@ reg old_write;
 reg [7:0] din_copy;
 
 always @(posedge clk)
-    old_write <= write;
+    if( ss_scan )
+        old_write <= ss_si;
+    else if( !ss_hold )
+        old_write <= write;
 
 generate
     if( use_ssg ) begin
@@ -198,11 +217,28 @@ endgenerate
 
 reg part;
 
+// Savestate scan chain: old_write, the registers below that the YM2612 uses
+// (div_setting is fixed by mask_div), busy, then the divider and jt12_reg.
+localparam SS_MMR = 125;
+wire [SS_MMR-1:0] ss_q1 = { selected_register, up_ch, up_op, up_keyon, up_opreg,
+    up_chreg, value_A, value_B, clr_flag_B, clr_flag_A, enable_irq_B, enable_irq_A,
+    load_B, load_A, fast_timers, lfo_freq, lfo_en, csm, effect, pcm, pcm_en, pcm_wr,
+    eg_stop, pg_stop, block_ch3op1, fnum_ch3op1, block_ch3op3, fnum_ch3op3,
+    block_ch3op2, fnum_ch3op2, latch_fnum, din_copy, part };
+
 // this runs at clk speed, no clock gating here
 // if I try to make this an async rst it fails to map it
 // as flip flops but uses latches instead. So I keep it as sync. reset
 always @(posedge clk) begin : memory_mapped_registers
-    if( rst ) begin
+    if( ss_scan )
+        { selected_register, up_ch, up_op, up_keyon, up_opreg,
+          up_chreg, value_A, value_B, clr_flag_B, clr_flag_A, enable_irq_B, enable_irq_A,
+          load_B, load_A, fast_timers, lfo_freq, lfo_en, csm, effect, pcm, pcm_en, pcm_wr,
+          eg_stop, pg_stop, block_ch3op1, fnum_ch3op1, block_ch3op3, fnum_ch3op3,
+          block_ch3op2, fnum_ch3op2, latch_fnum, din_copy, part } <= { ss_q1[SS_MMR-2:0], old_write };
+    else if( ss_hold ) begin
+        // stopped for a savestate
+    end else if( rst ) begin
         selected_register   <= 8'h0;
         div_setting         <= 2'b10; // FM=1/6, SSG=1/4
         up_ch               <= 3'd0;
@@ -413,12 +449,16 @@ end
 
 reg [4:0] busy_cnt; // busy lasts for 32 synth clock cycles, like in real chip
 
+assign ss_q2 = { busy, busy_cnt };
+
 always @(posedge clk, posedge rst)
     if( rst ) begin
         busy <= 1'b0;
         busy_cnt <= 5'd0;
     end
-    else begin
+    else if( ss_scan )
+        { busy, busy_cnt } <= { ss_q2[4:0], ss_q1[SS_MMR-1] };
+    else if( !ss_hold ) begin
         if (!old_write && write && addr[0] ) begin // only set for data writes
             busy <= 1'b1;
             busy_cnt <= 5'd0;
@@ -504,7 +544,14 @@ jt12_reg #(.num_ch(num_ch)) u_reg(
     .s1_enters  ( s1_enters ),
     .s2_enters  ( s2_enters ),
     .s3_enters  ( s3_enters ),
-    .s4_enters  ( s4_enters )
+    .s4_enters  ( s4_enters ),
+
+    .ss_scan    ( ss_scan   ),
+    .ss_si      ( ss_c_div  ),
+    .ss_so      ( ss_so     ),
+    .ss_n       ( ss_n_reg  )
 );
+
+assign ss_n = 13'd1 + SS_MMR + 13'd6 + ss_n_div + ss_n_reg;
 
 endmodule

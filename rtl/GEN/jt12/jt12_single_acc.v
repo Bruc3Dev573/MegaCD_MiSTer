@@ -33,7 +33,12 @@ module jt12_single_acc #(parameter
     input [win-1:0]       op_result,
     input                 sum_en,
     input                 zero,
-    output reg [wout-1:0] snd
+    output reg [wout-1:0] snd,
+    // Savestate scan chain, see jt12_sh.v
+    input                 ss_scan,
+    input                 ss_si,
+    output                ss_so,
+    output         [12:0] ss_n
 );
 
 // for full resolution use win=14, wout=16
@@ -54,7 +59,13 @@ always @(*) begin
         (acc[wout-1]!=next[wout-1]);
 end
 
-always @(posedge clk) if( clk_en ) begin
+wire [2*wout-1:0] ss_q = { acc, snd };
+assign ss_so = ss_q[2*wout-1];
+assign ss_n  = 2*wout;
+
+always @(posedge clk) if( ss_scan )
+    { acc, snd } <= { ss_q[2*wout-2:0], ss_si };
+else if( clk_en ) begin
     acc <= overflow ? (acc[wout-1] ? minus_inf : plus_inf) : next;
     if(zero) snd <= acc;
 end

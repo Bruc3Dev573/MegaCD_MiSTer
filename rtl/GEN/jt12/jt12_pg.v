@@ -50,7 +50,12 @@ module jt12_pg(
     input               pg_stop,    // not implemented
     
     output  reg [ 4:0]  keycode_II,
-    output      [ 9:0]  phase_VIII
+    output      [ 9:0]  phase_VIII,
+    // Savestate scan chain, see jt12_sh.v
+    input               ss_scan,
+    input               ss_si,
+    output              ss_so,
+    output      [12:0]  ss_n
 );
 
 parameter num_ch=6;
@@ -63,7 +68,15 @@ reg  [16:0] phinc_II;
 wire [19:0] phase_drop, phase_in;
 wire [ 9:0] phase_II;
 
-always @(posedge clk) if(clk_en) begin
+// Savestate scan chain: the stage II registers, the phase and the phase pad
+wire [27:0] ss_q = { keycode_II, detune_mod_II, phinc_II };
+wire        ss_c_ph;
+wire [12:0] ss_n_ph, ss_n_pad;
+assign ss_n = 13'd28 + ss_n_ph + ss_n_pad;
+
+always @(posedge clk) if(ss_scan)
+    { keycode_II, detune_mod_II, phinc_II } <= { ss_q[26:0], ss_si };
+else if(clk_en) begin
     keycode_II      <= keycode_I;
     detune_mod_II   <= detune_mod_I;
     phinc_II        <= phinc_I;
@@ -98,7 +111,11 @@ jt12_sh_rst #( .width(20), .stages(4*num_ch) ) u_phsh(
     .clk_en ( clk_en    ),
     .rst    ( rst       ),
     .din    ( phase_in  ),
-    .drop   ( phase_drop)
+    .drop   ( phase_drop),
+    .ss_scan( ss_scan   ),
+    .ss_si  ( ss_q[27]  ),
+    .ss_so  ( ss_c_ph   ),
+    .ss_n   ( ss_n_ph   )
 );
 
 jt12_sh_rst #( .width(10), .stages(6) ) u_pad(
@@ -106,7 +123,11 @@ jt12_sh_rst #( .width(10), .stages(6) ) u_pad(
     .clk_en ( clk_en    ),
     .rst    ( rst       ),  
     .din    ( phase_II  ),
-    .drop   ( phase_VIII)
+    .drop   ( phase_VIII),
+    .ss_scan( ss_scan   ),
+    .ss_si  ( ss_c_ph   ),
+    .ss_so  ( ss_so     ),
+    .ss_n   ( ss_n_pad  )
 );
 
 endmodule

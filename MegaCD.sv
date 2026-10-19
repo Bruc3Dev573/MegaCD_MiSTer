@@ -629,9 +629,11 @@ gen gen
 	.SS_VDP_PHASE_OK(ss_vdp_phase_ok),
 
 	.SS_FM_ADDR(ss_fm_addr),
-	.SS_FM_WR_DATA(ss_state_dout[7:0]),
+	.SS_FM_WR_DATA(ss_state_dout),
 	.SS_FM_WR_EN(ss_fm_wr_en),
+	.SS_FM_RD_EN(ss_fm_rd_en),
 	.SS_FM_RD_DATA(ss_fm_rd_data),
+	.SS_FM_READY(ss_fm_ready),
 	.SS_FM_REPLAY(ss_load_done),
 	.SS_FM_REPLAYING(ss_fm_replaying),
 
@@ -667,10 +669,12 @@ wire        ss_psg_wr_en;
 wire [31:0] ss_psg_rd_data;
 
 wire       ss_vdp_quiet;
-wire [8:0] ss_fm_addr;
-wire       ss_fm_wr_en;
-wire [7:0] ss_fm_rd_data;
-wire       ss_fm_replaying;
+wire  [8:0] ss_fm_addr;
+wire        ss_fm_wr_en;
+wire        ss_fm_rd_en;
+wire [31:0] ss_fm_rd_data;
+wire        ss_fm_ready;
+wire        ss_fm_replaying;
 
 wire  [1:0] ss_vdp_sel;
 wire  [7:0] ss_vdp_addr;
@@ -1635,7 +1639,7 @@ localparam [31:0] SS_M68K_REGS_SIZE = 32'd128;    // fx68k main
 localparam [31:0] SS_S68K_REGS_SIZE = 32'd128;    // fx68k sub
 localparam [31:0] SS_Z80_REGS_SIZE  = 32'd32;
 localparam [31:0] SS_VDP_REGS_SIZE  = 32'd64;
-localparam [31:0] SS_FM_SHADOW_SIZE = 32'd512;    // YM2612 shadow, 1 register per word
+localparam [31:0] SS_FM_SHADOW_SIZE = 32'd512;    // YM2612 shadow, 1 register per word, and chip state
 localparam [31:0] SS_PSG_REGS_SIZE  = 32'd16;
 localparam [31:0] SS_ASIC_REGS_SIZE = 32'd128;
 localparam [31:0] SS_CDC_REGS_SIZE  = 32'd16;
@@ -1886,10 +1890,12 @@ assign ss_dev_addr  = ss_sel_cdc_regs ? 6'(ss_state_addr - SS_OFF_CDC_REGS)  :
                                         6'(ss_state_addr - SS_OFF_CDDA_REGS);
 assign ss_dev_wr_en = ss_state_we & ss_sel_dev;
 
-// FM register shadow: one YM2612 register per word, 512 of them.
+// FM: one YM2612 register of the shadow per word, 512 of them, and in bits 31-8 the
+// state of the chip (fm_savestate.sv). A word of chip state takes 24 clocks.
 wire ss_sel_fm = `SS_IN(SS_OFF_FM_SHADOW, SS_FM_SHADOW_SIZE);
 assign ss_fm_addr  = 9'(ss_state_addr - SS_OFF_FM_SHADOW);
 assign ss_fm_wr_en = ss_state_we & ss_sel_fm;
+assign ss_fm_rd_en = ss_state_wr & ss_sel_fm;
 
 // PSG.
 wire ss_sel_psg = `SS_IN(SS_OFF_PSG_REGS, SS_PSG_REGS_SIZE);
@@ -2072,7 +2078,8 @@ always @(posedge clk_sys) begin
 end
 
 // Regions that answer in the engine's fixed 4-cycle window never stall it.
-wire ss_state_ready = ss_sel_sdram ? ss_sdr_ready : 1'b1;
+wire ss_state_ready = ss_sel_sdram ? ss_sdr_ready :
+                      ss_sel_fm    ? ss_fm_ready  : 1'b1;
 
 // Inside a 128-word region the low 8 offset bits are the whole address. The
 // explicit slice avoids a truncation warning.
@@ -2110,7 +2117,7 @@ always @(posedge clk_sys) begin
 	else if(ss_sel_dev)
 		ss_state_din_r <= ss_dev_rd_data;
 	else if(ss_sel_fm)
-		ss_state_din_r <= {24'd0, ss_fm_rd_data};
+		ss_state_din_r <= ss_fm_rd_data;
 	else if(ss_sel_psg)
 		ss_state_din_r <= ss_psg_rd_data;
 	else if(ss_sel_z80)

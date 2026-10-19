@@ -31,17 +31,28 @@ module jt10_adpcm_div #(parameter dw=16)(
     input      [dw-1:0] b,
     output reg [dw-1:0] d,
     output reg [dw-1:0] r,
-    output              working
+    output              working,
+    // Savestate scan chain, see jt12_sh.v
+    input               ss_scan,
+    input               ss_si,
+    output              ss_so,
+    output       [12:0] ss_n
 );
 
 reg  [dw-1:0] cycle;
 assign working = cycle[0];
+
+wire [3*dw-1:0] ss_q = { cycle, r, d };
+assign ss_so = ss_q[3*dw-1];
+assign ss_n  = 3*dw;
 
 wire [dw:0] sub = { r[dw-2:0], d[dw-1] } - b;  
 
 always @(posedge clk or negedge rst_n)
     if( !rst_n ) begin
         cycle <= 'd0;
+    end else if( ss_scan ) begin
+        { cycle, r, d } <= { ss_q[3*dw-2:0], ss_si };
     end else if(cen) begin
         if( start ) begin
             cycle <= ~16'd0;

@@ -65,7 +65,18 @@ module jt12_top (
     output  signed  [15:0] snd_left,  // FM+PSG
     output                 snd_sample,
     input           [ 7:0] debug_bus,
-    output          [ 7:0] debug_view
+    output          [ 7:0] debug_view,
+    // Savestate, YM2612 configuration only. ss_hold stops every register of the
+    // chip, as if its clock stopped; the parent masks rst with it. While held,
+    // ss_scan shifts all of them by one bit through one scan chain of ss_n bits
+    // from ss_si to ss_so (see jt12_sh.v), and ss_commit then reloads the ROM
+    // address registers from their copies in the chain.
+    input                  ss_hold,
+    input                  ss_scan,
+    input                  ss_si,
+    output                 ss_so,
+    output          [12:0] ss_n,
+    input                  ss_commit
 );
 
 // parameters to select the features for each chip type
@@ -275,6 +286,16 @@ end else begin : gen_adpcm_no
 end
 endgenerate
 
+// Savestate scan chain, in this order: dout, mmr (with the divider and the
+// registers), timers, LFO, PG, EG, the EG pad, the operator, the PCM interpolator,
+// then the six used accumulators.
+wire        ss_c_dout, ss_c_mmr, ss_c_tim, ss_c_lfo, ss_c_pg, ss_c_eg, ss_c_egpad,
+            ss_c_op, ss_c_pcm;
+wire [12:0] ss_n_dout, ss_n_mmr, ss_n_tim, ss_n_lfo, ss_n_pg, ss_n_eg, ss_n_egpad,
+            ss_n_op, ss_n_pcm, ss_n_acc;
+assign ss_n = ss_n_dout + ss_n_mmr + ss_n_tim + ss_n_lfo + ss_n_pg + ss_n_eg + ss_n_egpad
+            + ss_n_op + ss_n_pcm + ss_n_acc;
+
 /* verilator tracing_on */
 jt12_dout #(.use_ssg(use_ssg),.use_adpcm(use_adpcm)) u_dout(
 //    .rst_n          ( rst_n         ),
@@ -286,7 +307,12 @@ jt12_dout #(.use_ssg(use_ssg),.use_adpcm(use_adpcm)) u_dout(
     .adpcmb_flag    ( adpcmb_flag   ),
     .psg_dout       ( psg_dout      ),
     .addr           ( addr          ),
-    .dout           ( dout          )
+    .dout           ( dout          ),
+    .ss_hold        ( ss_hold       ),
+    .ss_scan        ( ss_scan       ),
+    .ss_si          ( ss_si         ),
+    .ss_so          ( ss_c_dout     ),
+    .ss_n           ( ss_n_dout     )
 );
 
 
@@ -395,13 +421,18 @@ jt12_mmr #(.use_ssg(use_ssg),.num_ch(num_ch),.use_pcm(use_pcm), .use_adpcm(use_a
     .psg_data   ( psg_data  ),
     .psg_wr_n   ( psg_wr_n  ),
     .debug_bus  ( debug_bus ),
-    .div_setting(div_setting)
+    .div_setting(div_setting),
+    .ss_hold    ( ss_hold   ),
+    .ss_scan    ( ss_scan   ),
+    .ss_si      ( ss_c_dout ),
+    .ss_so      ( ss_c_mmr  ),
+    .ss_n       ( ss_n_mmr  )
 );
 
 /* verilator tracing_on */
 // YM2203 seems to use a fixed cen/3 clock for the timers, regardless
 // of the prescaler setting
-wire timer_cen = fast_timers ? cen : clk_en;
+wire timer_cen = fast_timers ? (cen & ~ss_hold) : clk_en;
 jt12_timers #(.num_ch(num_ch)) u_timers (
     .clk        ( clk           ),
     .clk_en     ( timer_cen     ),
@@ -418,7 +449,12 @@ jt12_timers #(.num_ch(num_ch)) u_timers (
     .flag_A     ( flag_A        ),
     .flag_B     ( flag_B        ),
     .overflow_A ( overflow_A    ),
-    .irq_n      ( irq_n         )
+    .irq_n      ( irq_n         ),
+    .ss_hold    ( ss_hold       ),
+    .ss_scan    ( ss_scan       ),
+    .ss_si      ( ss_c_mmr      ),
+    .ss_so      ( ss_c_tim      ),
+    .ss_n       ( ss_n_tim      )
 );
 
 // YM2203 does not have LFO
@@ -436,10 +472,17 @@ if( use_lfo== 1) begin : gen_lfo
         `endif
         .lfo_en     ( lfo_en    ),
         .lfo_freq   ( lfo_freq  ),
-        .lfo_mod    ( lfo_mod   )
+        .lfo_mod    ( lfo_mod   ),
+        .ss_hold    ( ss_hold   ),
+        .ss_scan    ( ss_scan   ),
+        .ss_si      ( ss_c_tim  ),
+        .ss_so      ( ss_c_lfo  ),
+        .ss_n       ( ss_n_lfo  )
     );
 end else begin : gen_nolfo
     assign lfo_mod = 7'd0;
+    assign ss_c_lfo = ss_c_tim;
+    assign ss_n_lfo = 13'd0;
 end
 endgenerate
 
@@ -511,7 +554,11 @@ jt12_pg #(.num_ch(num_ch)) u_pg(
     .pg_rst_II  ( pg_rst_II     ),
     .pg_stop    ( pg_stop       ),
     .keycode_II ( keycode_II    ),
-    .phase_VIII ( phase_VIII    )
+    .phase_VIII ( phase_VIII    ),
+    .ss_scan    ( ss_scan       ),
+    .ss_si      ( ss_c_lfo      ),
+    .ss_so      ( ss_c_pg       ),
+    .ss_n       ( ss_n_pg       )
 );
 
 wire [9:0] eg_V;
@@ -542,14 +589,22 @@ jt12_eg #(.num_ch(num_ch)) u_eg(
     .amsen_IV       ( amsen_IV      ),
 
     .eg_V           ( eg_V          ),
-    .pg_rst_II      ( pg_rst_II     )
+    .pg_rst_II      ( pg_rst_II     ),
+    .ss_scan        ( ss_scan       ),
+    .ss_si          ( ss_c_pg       ),
+    .ss_so          ( ss_c_eg       ),
+    .ss_n           ( ss_n_eg       )
 );
 
 jt12_sh #(.width(10),.stages(4)) u_egpad(
     .clk    ( clk       ),
     .clk_en ( clk_en    ),
     .din    ( eg_V      ),
-    .drop   ( eg_IX     )
+    .drop   ( eg_IX     ),
+    .ss_scan( ss_scan   ),
+    .ss_si  ( ss_c_eg   ),
+    .ss_so  ( ss_c_egpad),
+    .ss_n   ( ss_n_egpad)
 );
 
 jt12_op #(.num_ch(num_ch)) u_op(
@@ -573,7 +628,12 @@ jt12_op #(.num_ch(num_ch)) u_op(
     .yuse_prev2     ( yuse_prev2    ),
     .zero           ( zero          ),
     .op_result      ( op_result     ),
-    .full_result    ( op_result_hd  )
+    .full_result    ( op_result_hd  ),
+    .ss_scan        ( ss_scan       ),
+    .ss_si          ( ss_c_egpad    ),
+    .ss_so          ( ss_c_op       ),
+    .ss_n           ( ss_n_op       ),
+    .ss_commit      ( ss_commit     )
 );
 `else
 assign op_result    = 'd0;
@@ -629,13 +689,34 @@ generate
             .cen55 ( clk_en_55      ),
             .pcm_wr( pcm_wr         ),
             .pcmin ( {pcm[8],pcm, 1'b0}    ),
-            .pcmout( pcm_full       )
+            .pcmout( pcm_full       ),
+            .ss_hold( ss_hold       ),
+            .ss_scan( ss_scan       ),
+            .ss_si  ( ss_c_op       ),
+            .ss_so  ( ss_c_pcm      ),
+            .ss_n   ( ss_n_pcm      )
         );
         `else
         assign pcm2 = pcm;
+        assign ss_c_pcm = ss_c_op;
+        assign ss_n_pcm = 13'd0;
         `endif
 
+        // Channel index 3 does not exist: its accumulator stays out of the chain,
+        // so that synthesis still removes it.
+        wire [7:0]    ss_c_acc;
+        wire [8*13-1:0] ss_n_sum;
+        assign ss_c_acc[0]      = ss_c_pcm;
+        assign ss_n_sum[12:0]   = 13'd0;
+        assign ss_so            = ss_c_acc[7];
+        assign ss_n_acc         = ss_n_sum[7*13 +: 13];
+
         for (i = 0; i < 7; i = i + 1) begin : accumulator_block
+        wire        ss_so_i;
+        wire [12:0] ss_n_i;
+        assign ss_c_acc[i+1]            = (i == 3) ? ss_c_acc[i] : ss_so_i;
+        assign ss_n_sum[(i+1)*13 +: 13] = ss_n_sum[i*13 +: 13] + ((i == 3) ? 13'd0 : ss_n_i);
+
         jt12_acc u_acc(
             .rst        ( rst       ),
             .clk        ( clk       ),
@@ -659,7 +740,11 @@ generate
             // .left       ( fm_snd_left [15:4]  ),
             // .right      ( fm_snd_right[15:4]  )
             .left       ( accum_l[i]),
-            .right      ( accum_r[i])
+            .right      ( accum_r[i]),
+            .ss_scan    ( (i != 3) & ss_scan ),
+            .ss_si      ( ss_c_acc[i]),
+            .ss_so      ( ss_so_i   ),
+            .ss_n       ( ss_n_i    )
         );
         end
     end

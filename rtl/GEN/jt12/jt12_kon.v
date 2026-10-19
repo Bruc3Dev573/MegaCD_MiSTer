@@ -35,7 +35,12 @@ module jt12_kon(
     // input            flag_A,
     input           overflow_A,
 
-    output  reg     keyon_I
+    output  reg     keyon_I,
+    // Savestate scan chain, see jt12_sh.v
+    input           ss_scan,
+    input           ss_si,
+    output          ss_so,
+    output  [12:0]  ss_n
 );
 
 parameter num_ch=6;
@@ -48,7 +53,16 @@ if(num_ch==6) begin
     reg overflow2;
     reg [4:0] overflow_cycle;
 
-    always @(posedge clk) if( clk_en ) begin
+    // Savestate scan chain: overflow2/overflow_cycle, keyon_I, the key-on latch,
+    // then the four key-on shift registers.
+    wire [5:0] ss_q0 = { overflow2, overflow_cycle };
+    wire [7:0] ss_q2;
+    wire [12:0] ss_n0, ss_n1, ss_n2, ss_n3;
+    wire ss_c0, ss_c1, ss_c2, ss_c3;
+
+    always @(posedge clk) if( ss_scan )
+        { overflow2, overflow_cycle } <= { ss_q0[4:0], ss_si };
+    else if( clk_en ) begin
         if(overflow_A) begin
             overflow2 <= 1'b1;
             overflow_cycle <= { next_op, next_ch };
@@ -57,7 +71,9 @@ if(num_ch==6) begin
         end
     end
 
-    always @(posedge clk) if( clk_en )
+    always @(posedge clk) if( ss_scan )
+        keyon_I <= ss_q0[5];
+    else if( clk_en )
         keyon_I <= (csm&&next_ch==3'd2&&overflow2) || csr_out;
 
     reg        up_keyon_reg;
@@ -66,8 +82,11 @@ if(num_ch==6) begin
     wire       key_upnow;
 
     assign key_upnow = up_keyon_reg && (tkeyon_ch==next_ch) && (next_op == 2'd3);
+    assign ss_q2 = { up_keyon_reg, tkeyon_op, tkeyon_ch };
 
-    always @(posedge clk) if( clk_en ) begin
+    always @(posedge clk) if( ss_scan )
+        { up_keyon_reg, tkeyon_op, tkeyon_ch } <= { ss_q2[6:0], keyon_I };
+    else if( clk_en ) begin
         if (rst)
             up_keyon_reg <= 1'b0;
         if (up_keyon) begin
@@ -92,7 +111,11 @@ if(num_ch==6) begin
         .clk_en ( clk_en    ),
         .rst    ( rst       ),
         .din    ( din       ),
-        .drop   ( middle1   )
+        .drop   ( middle1   ),
+        .ss_scan( ss_scan   ),
+        .ss_si  ( ss_q2[7]  ),
+        .ss_so  ( ss_c0     ),
+        .ss_n   ( ss_n0     )
     );
 
     jt12_sh_rst #(.width(1),.stages(6),.rstval(1'b0)) u_konch1(
@@ -100,7 +123,11 @@ if(num_ch==6) begin
         .clk_en ( clk_en    ),
         .rst    ( rst       ),
         .din    ( mid_din2  ),
-        .drop   ( middle2   )
+        .drop   ( middle2   ),
+        .ss_scan( ss_scan   ),
+        .ss_si  ( ss_c0     ),
+        .ss_so  ( ss_c1     ),
+        .ss_n   ( ss_n1     )
     );
 
     jt12_sh_rst #(.width(1),.stages(6),.rstval(1'b0)) u_konch2(
@@ -108,7 +135,11 @@ if(num_ch==6) begin
         .clk_en ( clk_en    ),
         .rst    ( rst       ),
         .din    ( mid_din3  ),
-        .drop   ( middle3   )
+        .drop   ( middle3   ),
+        .ss_scan( ss_scan   ),
+        .ss_si  ( ss_c1     ),
+        .ss_so  ( ss_c2     ),
+        .ss_n   ( ss_n2     )
     );
 
     jt12_sh_rst #(.width(1),.stages(6),.rstval(1'b0)) u_konch3(
@@ -116,8 +147,15 @@ if(num_ch==6) begin
         .clk_en ( clk_en    ),
         .rst    ( rst       ),
         .din    ( mid_din4  ),
-        .drop   ( csr_out   )
+        .drop   ( csr_out   ),
+        .ss_scan( ss_scan   ),
+        .ss_si  ( ss_c2     ),
+        .ss_so  ( ss_c3     ),
+        .ss_n   ( ss_n3     )
     );
+
+    assign ss_so = ss_c3;
+    assign ss_n  = 13'd15 + ss_n0 + ss_n1 + ss_n2 + ss_n3;
 end
 else begin // 3 channels
     reg din;
@@ -133,7 +171,11 @@ else begin // 3 channels
         din = keyon_ch[1:0]==next_ch[1:0] && up_keyon ? |(keyon_op&next_op_hot) : csr_out;
     end
 
-    always @(posedge clk) if( clk_en )
+    wire [12:0] ss_c0n;
+
+    always @(posedge clk) if( ss_scan )
+        keyon_I <= ss_si;
+    else if( clk_en )
         keyon_I <= csr_out; // No CSM for YM2203
 
     jt12_sh_rst #(.width(1),.stages(12),.rstval(1'b0)) u_konch1(
@@ -141,8 +183,13 @@ else begin // 3 channels
         .clk_en ( clk_en    ),
         .rst    ( rst       ),
         .din    ( din       ),
-        .drop   ( csr_out   )
+        .drop   ( csr_out   ),
+        .ss_scan( ss_scan   ),
+        .ss_si  ( keyon_I   ),
+        .ss_so  ( ss_so     ),
+        .ss_n   ( ss_c0n    )
     );
+    assign ss_n = 13'd1 + ss_c0n;
 end
 endgenerate
 

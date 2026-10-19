@@ -165,11 +165,13 @@ module gen
 	input         SS_VDP_RESUME,   // 1 clock at release, latched pending bits return
 	output        SS_VDP_PHASE_OK, // live raster is back at the parked position
 
-	// FM register shadow (region FM_SHADOW), one YM2612 register per word.
+	// FM (region FM_SHADOW, see fm_savestate.sv): the register shadow and the chip state.
 	input   [8:0] SS_FM_ADDR,
-	input   [7:0] SS_FM_WR_DATA,
+	input  [31:0] SS_FM_WR_DATA,
 	input         SS_FM_WR_EN,
-	output  [7:0] SS_FM_RD_DATA,
+	input         SS_FM_RD_EN,
+	output [31:0] SS_FM_RD_DATA,
+	output        SS_FM_READY,
 	input         SS_FM_REPLAY,   // 1-cycle pulse after a load completes
 	output        SS_FM_REPLAYING,
 
@@ -1321,141 +1323,34 @@ wire signed [15:0] FM_LPF_left;
 wire signed [15:0] SL;
 wire signed [15:0] SR;
 
-//--------------------------------------------------------------
-// FM register shadow for savestates
-//--------------------------------------------------------------
-// Mirror CPU writes because jt12's rotating register file has no readback.
-// YM2612 A0 selects address or data. A1 selects one of two banks.
-reg [7:0] fm_shadow[0:511];
-reg [7:0] fm_addr_lat[0:1];
-reg [7:0] fm_shadow_q;
-
-// The shadow is read either by the savestate stream or by the replay sequencer.
-wire [8:0] fm_sh_rd_addr = fm_rp_run ? fm_rp_idx[8:0] : SS_FM_ADDR;
-
-// Mux CPU/restore writes into one port so Quartus infers a 1W1R memory.
-wire [8:0] fm_wr_addr = SS_FM_WR_EN ? SS_FM_ADDR
-                                    : {ZBUS_A[1], fm_addr_lat[ZBUS_A[1]]};
-wire [7:0] fm_wr_data = SS_FM_WR_EN ? SS_FM_WR_DATA : ZBUS_DO;
-wire       fm_wr_en   = SS_FM_WR_EN | (FM_SEL & ZBUS_WE & ZBUS_A[0]);
-
-always @(posedge MCLK) begin
-	// The register-index latch stays in flops: two bytes, one per bank.
-	if (FM_SEL & ZBUS_WE & ~ZBUS_A[0]) fm_addr_lat[ZBUS_A[1]] <= ZBUS_DO;
-
-	if (fm_wr_en) fm_shadow[fm_wr_addr] <= fm_wr_data;
-	fm_shadow_q <= fm_shadow[fm_sh_rd_addr];
-end
-assign SS_FM_RD_DATA = fm_shadow_q;
-
-//--------------------------------------------------------------
-// FM replay sequencer
-//--------------------------------------------------------------
-// The YM2612 register file is shift registers, not RAM. A write lands only when
-// its target slot comes round, so back to back writes are dropped. The sequencer
-// polls the busy bit in the status byte between writes, as a sound driver does.
-//
-// Replay order:
-//   $28  key on/off last, after every operator's TL/AR/DR/SL/RR is in place.
-//   $27  timer control late, so timers and IRQs do not start mid-sweep.
-//   $24-$26 timer periods, replayed with $27.
-//   $2A $2B  DAC data and enable are skipped. $2A is a sample stream and
-//        $2B moves the output mux.
-//   $21 $2C  test registers are skipped.
-//
-// Envelope phase, phase accumulators and the LFO counter are internal and are not
-// restored. Audio becomes correct within a note or two.
-reg  [9:0] fm_rp_idx;
-reg  [1:0] fm_rp_st;
-reg        fm_rp_run = 0;
-reg        fm_rp_wr;
-reg        fm_rp_phase;   // 0 = write the register index, 1 = write its value
-
-assign SS_FM_REPLAYING = fm_rp_run;
-
-wire [7:0] fm_rp_reg  = fm_rp_idx[7:0];
-wire       fm_rp_bank = fm_rp_idx[8];
-
-// Registers to skip during the main sweep. The tail (idx 512, 513) replays the
-// two that were held back, in order.
-wire fm_rp_skip = (fm_rp_idx < 10'd512) &&
-                  ( (fm_rp_reg < 8'h22) || (fm_rp_reg >= 8'hB7) ||
-                    (~fm_rp_bank & (fm_rp_reg == 8'h24 || fm_rp_reg == 8'h25 ||
-                                    fm_rp_reg == 8'h26 || fm_rp_reg == 8'h27 ||
-                                    fm_rp_reg == 8'h28 || fm_rp_reg == 8'h2A ||
-                                    fm_rp_reg == 8'h2B || fm_rp_reg == 8'h2C)) ||
-                    ( fm_rp_bank & (fm_rp_reg < 8'h30)) );
-
-// idx 512 is $27 (timers), idx 513 is $28 (key on/off). Both bank 0.
-wire [7:0] fm_rp_reg_eff  = (fm_rp_idx == 10'd512) ? 8'h27 :
-                            (fm_rp_idx == 10'd513) ? 8'h28 : fm_rp_reg;
-wire       fm_rp_bank_eff = (fm_rp_idx >= 10'd512) ? 1'b0 : fm_rp_bank;
-
-wire fm_busy = FM_DO[7];
-
-always @(posedge MCLK) begin
-	if (SS_FM_REPLAY) begin
-		fm_rp_idx <= 0;
-		fm_rp_st  <= 0;
-		fm_rp_run <= 1;
-		fm_rp_wr  <= 0;
-	end
-	else if (fm_rp_run) begin
-		case (fm_rp_st)
-			// Pick the next register, or finish.
-			2'd0: begin
-				fm_rp_wr <= 0;
-				if (fm_rp_idx > 10'd513) fm_rp_run <= 0;
-				else if (fm_rp_skip)     fm_rp_idx <= fm_rp_idx + 1'd1;
-				else if (!fm_busy) begin
-					fm_rp_phase <= 0;      // address port
-					fm_rp_wr    <= 1;
-					fm_rp_st    <= 2'd1;
-				end
-			end
-			// Address written. Wait for the chip to take it.
-			2'd1: begin
-				fm_rp_wr <= 0;
-				if (!fm_busy) begin
-					fm_rp_phase <= 1;      // data port
-					fm_rp_wr    <= 1;
-					fm_rp_st    <= 2'd2;
-				end
-			end
-			// Data written. Wait, then step.
-			2'd2: begin
-				fm_rp_wr <= 0;
-				if (!fm_busy) begin
-					fm_rp_idx <= fm_rp_idx + 1'd1;
-					fm_rp_st  <= 2'd0;
-				end
-			end
-			default: fm_rp_st <= 2'd0;
-		endcase
-	end
-end
-
-// Bus mux. While replaying, the Z80 path is disconnected so a driver write cannot
-// land on a half-restored chip.
-wire [1:0] fm_addr_m = fm_rp_run ? {fm_rp_bank_eff, fm_rp_phase} : ZBUS_A[1:0];
-wire [7:0] fm_din_m  = fm_rp_run ? (fm_rp_phase ? fm_shadow_q : fm_rp_reg_eff) : ZBUS_DO;
-wire       fm_wr_n_m = fm_rp_run ? ~fm_rp_wr : ~(FM_SEL & ZBUS_WE);
-
-jt12 fm
+// The chip stops while the CPUs that write it are parked and during the stream.
+fm_savestate fm
 (
-	.rst(~Z80_RESET_N),
 	.clk(MCLK),
 	.cen(M68K_CLKENp),
+	.rst(~Z80_RESET_N),
 
-	.cs_n(0),
-	.addr(fm_addr_m),
-	.wr_n(fm_wr_n_m),
-	.din(fm_din_m),
+	.sel(FM_SEL),
+	.addr(ZBUS_A[1:0]),
+	.we(ZBUS_WE),
+	.din(ZBUS_DO),
 	.dout(FM_DO),
-	.en_hifi_pcm( EN_HIFI_PCM ),
+
+	.en_hifi_pcm(EN_HIFI_PCM),
 	.ladder(LADDER),
 	.snd_left(FM_left),
-	.snd_right(FM_right)
+	.snd_right(FM_right),
+
+	.ss_park(SS_ACTIVE | (SS_FREEZE & ss_m68k_freeze_eng & ss_z80_freeze_eng)),
+	.ss_active(SS_ACTIVE),
+	.ss_addr(SS_FM_ADDR),
+	.ss_wr_data(SS_FM_WR_DATA),
+	.ss_wr_en(SS_FM_WR_EN),
+	.ss_rd_en(SS_FM_RD_EN),
+	.ss_rd_data(SS_FM_RD_DATA),
+	.ss_ready(SS_FM_READY),
+	.ss_replay(SS_FM_REPLAY),
+	.ss_replaying(SS_FM_REPLAYING)
 );
 
 wire signed [15:0] fm_adjust_l = (FM_left << 4) + (FM_left << 2) + (FM_left << 1) + (FM_left >>> 2);

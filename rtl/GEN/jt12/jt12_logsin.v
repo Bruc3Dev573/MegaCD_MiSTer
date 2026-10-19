@@ -29,7 +29,14 @@ module jt12_logsin
     input [7:0] addr,
     input clk, 
     input clk_en,
-    output reg [11:0] logsin
+    output reg [11:0] logsin,
+    // Savestate. The address register of the ROM block cannot be shifted, so a
+    // copy of it is in the scan chain (jt12_sh.v) and ss_commit loads it back.
+    input ss_scan,
+    input ss_si,
+    output ss_so,
+    output [12:0] ss_n,
+    input ss_commit
 );  
 
 reg [11:0] sinelut[255:0];
@@ -292,7 +299,16 @@ initial begin
 	sinelut[8'd255] = 12'h859;
 end
 
-    always @ (posedge clk) if(clk_en)
-        logsin <= sinelut[addr];
+reg [7:0] ss_addr;
+assign ss_so = ss_addr[7];
+assign ss_n  = 13'd8;
+
+    always @ (posedge clk) if(ss_scan)
+        ss_addr <= { ss_addr[6:0], ss_si };
+    else if(clk_en)
+        ss_addr <= addr;
+
+    always @ (posedge clk) if(clk_en | ss_commit)
+        logsin <= sinelut[ss_commit ? ss_addr : addr];
 
 endmodule

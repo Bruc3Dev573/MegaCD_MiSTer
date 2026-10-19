@@ -24,12 +24,19 @@ module jt12_div(
     input           clk,
     input           cen /* synthesis direct_enable */,
     input     [1:0] div_setting,
-    output reg      clk_en,      // after prescaler
-    output reg      clk_en_2,    // cen divided by 2
-    output reg      clk_en_ssg,
-    output reg      clk_en_666,  // 666 kHz
-    output reg      clk_en_111,  // 111 kHz
-    output reg      clk_en_55    //  55 kHz
+    output          clk_en,      // after prescaler
+    output          clk_en_2,    // cen divided by 2
+    output          clk_en_ssg,
+    output          clk_en_666,  // 666 kHz
+    output          clk_en_111,  // 111 kHz
+    output          clk_en_55,   //  55 kHz
+    // Savestate. ss_hold stops the dividers and masks the enables they give, which
+    // stops the whole chip. ss_scan shifts the scan chain (jt12_sh.v).
+    input           ss_hold,
+    input           ss_scan,
+    input           ss_si,
+    output          ss_so,
+    output   [12:0] ss_n
 );
 
 parameter use_ssg=0;
@@ -73,25 +80,45 @@ always @(*) begin
     endcase // div_setting
 end
 
-`ifdef SIMULATION
-initial clk_en_666 = 1'b0;
-`endif
-
 reg cen_55_int;
 reg [1:0] div2=2'b0;
 
 reg pre_clk_en, pre_clk_en_2, pre_clk_en_ssg, pre_clk_en_666, pre_clk_en_111, pre_clk_en_55;
+reg clk_en_r, clk_en_2_r, clk_en_ssg_r, clk_en_666_r, clk_en_111_r, clk_en_55_r;
+
+`ifdef SIMULATION
+initial clk_en_666_r = 1'b0;
+`endif
+
+// The negedge registers copy posedge registers within the same clock, so they hold
+// no state of their own. The hold masks the enables.
+assign clk_en     = clk_en_r     & ~ss_hold;
+assign clk_en_2   = clk_en_2_r   & ~ss_hold;
+assign clk_en_ssg = clk_en_ssg_r & ~ss_hold;
+assign clk_en_666 = clk_en_666_r & ~ss_hold;
+assign clk_en_111 = clk_en_111_r & ~ss_hold;
+assign clk_en_55  = clk_en_55_r  & ~ss_hold;
 
 always @(negedge clk) begin     // It's important to leave the negedge to use the physical clock enable input
-    clk_en     <= pre_clk_en;
-    clk_en_2   <= pre_clk_en_2;
-    clk_en_ssg <= pre_clk_en_ssg;
-    clk_en_666 <= pre_clk_en_666;
-    clk_en_111 <= pre_clk_en_111;
-    clk_en_55  <= pre_clk_en_55;
+    clk_en_r     <= pre_clk_en;
+    clk_en_2_r   <= pre_clk_en_2;
+    clk_en_ssg_r <= pre_clk_en_ssg;
+    clk_en_666_r <= pre_clk_en_666;
+    clk_en_111_r <= pre_clk_en_111;
+    clk_en_55_r  <= pre_clk_en_55;
 end
 
+// Savestate scan chain: the registers below that the YM2612 uses (SSG, div/2,
+// 666 kHz and 111 kHz enables are unused).
+wire [5:0]  ss_q0 = { cen_int, cen_adpcm_int, cen_adpcm3_int, cen_55_int, pre_clk_en, pre_clk_en_55 };
+wire [10:0] ss_q2 = { adpcm_cnt666, adpcm_cnt111, adpcm_cnt55 };
+assign ss_so = ss_q2[10];
+assign ss_n  = 13'd21;
+
 always @(posedge clk) begin
+    if( ss_scan )
+        { cen_int, cen_adpcm_int, cen_adpcm3_int, cen_55_int, pre_clk_en, pre_clk_en_55 } <= { ss_q0[4:0], ss_si };
+    else if( !ss_hold ) begin
     cen_int        <= opn_cnt      == 4'd0;
     cen_ssg_int    <= ssg_cnt      == 3'd0;
     cen_adpcm_int  <= adpcm_cnt666 == 5'd0;
@@ -99,10 +126,10 @@ always @(posedge clk) begin
     cen_55_int     <= adpcm_cnt55  == 3'd0;
     `ifdef FASTDIV
     // always enabled for fast sims (use with GYM output, the timers will not work well)
-    clk_en     <= 1'b1;
-    clk_en_ssg <= 1'b1;
-    clk_en_666 <= 1'b1;
-    clk_en_55  <= 1'b1;
+    clk_en_r     <= 1'b1;
+    clk_en_ssg_r <= 1'b1;
+    clk_en_666_r <= 1'b1;
+    clk_en_55_r  <= 1'b1;
     `else
     pre_clk_en     <= cen & cen_int;
     pre_clk_en_2   <= cen && (div2==2'b00);
@@ -111,6 +138,7 @@ always @(posedge clk) begin
     pre_clk_en_111 <= cen & cen_adpcm_int & cen_adpcm3_int;
     pre_clk_en_55  <= cen & cen_adpcm_int & cen_adpcm3_int & cen_55_int;
     `endif
+    end
 end
 
 // Div/2
@@ -121,7 +149,9 @@ always @(posedge clk)
 
 // OPN
 always @(posedge clk)
-    if( cen ) begin
+    if( ss_scan )
+        opn_cnt <= { opn_cnt[2:0], ss_q0[5] };
+    else if( cen & ~ss_hold ) begin
         if( opn_cnt == opn_pres ) begin
             opn_cnt <= 4'd0;  
         end
@@ -139,7 +169,9 @@ always @(posedge clk)
 
 // ADPCM-A
 always @(posedge clk)
-    if( cen ) begin
+    if( ss_scan )
+        { adpcm_cnt666, adpcm_cnt111, adpcm_cnt55 } <= { ss_q2[9:0], opn_cnt[3] };
+    else if( cen & ~ss_hold ) begin
         adpcm_cnt666 <= adpcm_cnt666==5'd11 ? 5'd0 : adpcm_cnt666 + 5'd1;
         if( adpcm_cnt666==5'd0 ) begin
             adpcm_cnt111 <= adpcm_cnt111==3'd5 ? 3'd0 : adpcm_cnt111+3'd1;

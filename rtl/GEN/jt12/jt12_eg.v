@@ -45,19 +45,35 @@ module jt12_eg (
     input       [6:0]   tl_IV,
 
     output  reg [9:0]   eg_V,
-    output  reg         pg_rst_II
+    output  reg         pg_rst_II,
+    // Savestate scan chain, see jt12_sh.v
+    input               ss_scan,
+    input               ss_si,
+    output              ss_so,
+    output      [12:0]  ss_n
 );
 
 parameter num_ch=6;
 
 wire [14:0] eg_cnt;
 
+// Savestate scan chain: the envelope counter, the pipeline registers, then the
+// shift registers.
+wire        ss_c_cnt, ss_c_cntsh, ss_c_eg, ss_c_st, ss_c_inv;
+wire [12:0] ss_n_cnt, ss_n_cntsh, ss_n_eg, ss_n_st, ss_n_inv, ss_n_kon;
+wire [63:0] ss_q;
+assign ss_n = 13'd64 + ss_n_cnt + ss_n_cntsh + ss_n_eg + ss_n_st + ss_n_inv + ss_n_kon;
+
 jt12_eg_cnt u_egcnt(
     .rst    ( rst   ),
     .clk    ( clk   ),
     .clk_en ( clk_en & ~eg_stop ),
     .zero   ( zero  ),
-    .eg_cnt ( eg_cnt)
+    .eg_cnt ( eg_cnt),
+    .ss_scan( ss_scan   ),
+    .ss_si  ( ss_si     ),
+    .ss_so  ( ss_c_cnt  ),
+    .ss_n   ( ss_n_cnt  )
 );
 
 wire keyon_last_I;
@@ -145,7 +161,15 @@ jt12_eg_comb u_comb(
     .final_eg_out   ( eg_out_IV     )
 );
 
-always @(posedge clk) if(clk_en) begin
+assign ss_q = { eg_in_II, attack_II, base_rate_II, ssg_en_II, ssg_inv_II, ssg_off_II,
+    ssg_wb_II, pg_rst_II, eg_in_III, attack_III, rate_in_III, ssg_en_III, ssg_inv_III,
+    ssg_off_III, ssg_wb_III, step_III, sum_in_III, ssg_inv_IV, eg_in_IV, eg_V };
+
+always @(posedge clk) if(ss_scan)
+    { eg_in_II, attack_II, base_rate_II, ssg_en_II, ssg_inv_II, ssg_off_II,
+      ssg_wb_II, pg_rst_II, eg_in_III, attack_III, rate_in_III, ssg_en_III, ssg_inv_III,
+      ssg_off_III, ssg_wb_III, step_III, sum_in_III, ssg_inv_IV, eg_in_IV, eg_V } <= { ss_q[62:0], ss_c_cnt };
+else if(clk_en) begin
     eg_in_II    <= eg_in_I;
     attack_II   <= state_next_I[0];
     base_rate_II<= base_rate_I;
@@ -174,7 +198,11 @@ jt12_sh #( .width(1), .stages(4*num_ch) ) u_cntsh(
     .clk    ( clk       ),
     .clk_en ( clk_en    ),
     .din    ( cnt_lsb_II),
-    .drop   ( cnt_in_II )
+    .drop   ( cnt_in_II ),
+    .ss_scan( ss_scan   ),
+    .ss_si  ( ss_q[63]  ),
+    .ss_so  ( ss_c_cntsh),
+    .ss_n   ( ss_n_cntsh)
 );
 
 jt12_sh_rst #( .width(10), .stages(4*num_ch-3), .rstval(1'b1) ) u_egsh(
@@ -182,7 +210,11 @@ jt12_sh_rst #( .width(10), .stages(4*num_ch-3), .rstval(1'b1) ) u_egsh(
     .clk_en ( clk_en    ),
     .rst    ( rst       ),
     .din    ( eg_in_IV  ),
-    .drop   ( eg_in_I   )
+    .drop   ( eg_in_I   ),
+    .ss_scan( ss_scan   ),
+    .ss_si  ( ss_c_cntsh),
+    .ss_so  ( ss_c_eg   ),
+    .ss_n   ( ss_n_eg   )
 );
 
 jt12_sh_rst #( .width(3), .stages(4*num_ch), .rstval(1'b1) ) u_egstate(
@@ -190,7 +222,11 @@ jt12_sh_rst #( .width(3), .stages(4*num_ch), .rstval(1'b1) ) u_egstate(
     .clk_en ( clk_en    ),
     .rst    ( rst       ),
     .din    ( state_next_I  ),
-    .drop   ( state_in_I    )
+    .drop   ( state_in_I    ),
+    .ss_scan( ss_scan       ),
+    .ss_si  ( ss_c_eg       ),
+    .ss_so  ( ss_c_st       ),
+    .ss_n   ( ss_n_st       )
 );
 
 jt12_sh_rst #( .width(1), .stages(4*num_ch-3), .rstval(1'b0) ) u_ssg_inv(
@@ -198,7 +234,11 @@ jt12_sh_rst #( .width(1), .stages(4*num_ch-3), .rstval(1'b0) ) u_ssg_inv(
     .clk_en ( clk_en        ),
     .rst    ( rst           ),
     .din    ( ssg_inv_IV    ),
-    .drop   ( ssg_inv_in_I  )
+    .drop   ( ssg_inv_in_I  ),
+    .ss_scan( ss_scan       ),
+    .ss_si  ( ss_c_st       ),
+    .ss_so  ( ss_c_inv      ),
+    .ss_n   ( ss_n_inv      )
 );
 
 jt12_sh_rst #( .width(1), .stages(4*num_ch), .rstval(1'b0) ) u_konsh(
@@ -206,7 +246,11 @@ jt12_sh_rst #( .width(1), .stages(4*num_ch), .rstval(1'b0) ) u_konsh(
     .clk_en ( clk_en    ),
     .rst    ( rst       ),  
     .din    ( keyon_I   ),
-    .drop   ( keyon_last_I  )
+    .drop   ( keyon_last_I  ),
+    .ss_scan( ss_scan   ),
+    .ss_si  ( ss_c_inv  ),
+    .ss_so  ( ss_so     ),
+    .ss_n   ( ss_n_kon  )
 );
 
 

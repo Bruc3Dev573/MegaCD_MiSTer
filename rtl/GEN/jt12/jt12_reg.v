@@ -101,7 +101,13 @@ module jt12_reg(
     output              amsen_IV,
 
     // envelope operation
-    output          keyon_I
+    output          keyon_I,
+
+    // Savestate scan chain, see jt12_sh.v
+    input           ss_scan,
+    input           ss_si,
+    output          ss_so,
+    output  [12:0]  ss_n
 );
 
 parameter num_ch=6; // Use only 3 (YM2203/YM2610) or 6 (YM2612/YM2608)
@@ -136,7 +142,16 @@ wire [4:0] cur  = {  cur_op,  cur_ch };
 
 wire [2:0] fb_I;
 
-always @(posedge clk) if( clk_en ) begin
+// Savestate scan chain: fb_II/ch6op, the slot counter, then the key-on logic,
+// the operator registers and the channel registers.
+wire [3:0] ss_q0 = { fb_II, ch6op };
+wire [5:0] ss_q1 = { cur_op, cur_ch, zero };
+wire       ss_c_kon, ss_c_csr, ss_c_ch;
+wire [12:0] ss_n_kon, ss_n_csr, ss_n_ch, ss_n_rl;
+
+always @(posedge clk) if( ss_scan )
+    { fb_II, ch6op } <= { ss_q0[2:0], ss_si };
+else if( clk_en ) begin
     fb_II <= fb_I;
     ch6op <= next_ch==3'd6;
 end 
@@ -211,7 +226,9 @@ always @(*) begin
 end
 
 always @(posedge clk) begin : up_counter
-    if( clk_en ) begin
+    if( ss_scan )
+        { cur_op, cur_ch, zero } <= { ss_q1[4:0], ss_q0[3] };
+    else if( clk_en ) begin
         { cur_op, cur_ch }  <= { next_op, next_ch };
         zero    <= next == 5'd0;
     end
@@ -231,7 +248,11 @@ jt12_kon #(.num_ch(num_ch)) u_kon(
     // .flag_A      ( flag_A    ),
     .overflow_A ( overflow_A),
     
-    .keyon_I    ( keyon_I   )
+    .keyon_I    ( keyon_I   ),
+    .ss_scan    ( ss_scan   ),
+    .ss_si      ( ss_q1[5]  ),
+    .ss_so      ( ss_c_kon  ),
+    .ss_n       ( ss_n_kon  )
 );
 
 jt12_mod #(.num_ch(num_ch)) u_mod(
@@ -255,6 +276,8 @@ generate
     if( num_ch==6 ) begin
         // YM2612 / YM3438: Two CSR.
         wire [43:0] shift_middle;
+        wire        ss_c_mid;
+        wire [12:0] ss_n_csr0, ss_n_csr1;
 
         jt12_csr u_csr0(
             .rst            ( rst           ),
@@ -272,7 +295,11 @@ generate
             .up_ssgeg       ( up_ssgeg      ),  
             .update_op_I    ( update_op_I   ),
             .update_op_II   ( update_op_II  ),
-            .update_op_IV   ( update_op_IV  )
+            .update_op_IV   ( update_op_IV  ),
+            .ss_scan        ( ss_scan       ),
+            .ss_si          ( ss_c_kon      ),
+            .ss_so          ( ss_c_mid      ),
+            .ss_n           ( ss_n_csr0     )
         );
 
         wire up_midop_I  = { ~cur[4], cur[3:0] } == req_opch_I;
@@ -296,8 +323,13 @@ generate
             // update in the middle:
             .update_op_I    ( up_midop_I    ),
             .update_op_II   ( up_midop_II   ),
-            .update_op_IV   ( up_midop_IV   )
+            .update_op_IV   ( up_midop_IV   ),
+            .ss_scan        ( ss_scan       ),
+            .ss_si          ( ss_c_mid      ),
+            .ss_so          ( ss_c_csr      ),
+            .ss_n           ( ss_n_csr1     )
         );
+        assign ss_n_csr = ss_n_csr0 + ss_n_csr1;
     end
     else begin // YM2203 only has one CSR
         jt12_csr u_csr0(
@@ -316,7 +348,11 @@ generate
             .up_ssgeg       ( up_ssgeg      ),  
             .update_op_I    ( update_op_I   ),
             .update_op_II   ( update_op_II  ),
-            .update_op_IV   ( update_op_IV  )
+            .update_op_IV   ( update_op_IV  ),
+            .ss_scan        ( ss_scan       ),
+            .ss_si          ( ss_c_kon      ),
+            .ss_so          ( ss_c_csr      ),
+            .ss_n           ( ss_n_csr      )
         );
     end // else
 endgenerate
@@ -348,7 +384,11 @@ jt12_sh_rst #(.width(regch_width),.stages(num_ch)) u_regch(
     .clk_en ( clk_en    ),
     .rst    ( rst       ),
     .din    ( regch_in  ),
-    .drop   ( regch_out )
+    .drop   ( regch_out ),
+    .ss_scan( ss_scan   ),
+    .ss_si  ( ss_c_csr  ),
+    .ss_so  ( ss_c_ch   ),
+    .ss_n   ( ss_n_ch   )
 );
 
 generate
@@ -361,12 +401,19 @@ if( num_ch==6 ) begin
         .clk_en ( clk_en    ),
         .rst    ( rst       ),
         .din    ( up_pms_ch ? rl_in :  rl   ),
-        .drop   ( rl    )
+        .drop   ( rl    ),
+        .ss_scan( ss_scan   ),
+        .ss_si  ( ss_c_ch   ),
+        .ss_so  ( ss_so     ),
+        .ss_n   ( ss_n_rl   )
     );
 end else begin // YM2203 has no stereo output
     assign rl=2'b11;
+    assign ss_so   = ss_c_ch;
+    assign ss_n_rl = 13'd0;
 end
     
 endgenerate
+assign ss_n = 13'd10 + ss_n_kon + ss_n_csr + ss_n_ch + ss_n_rl;
 `endif
 endmodule

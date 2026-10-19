@@ -29,12 +29,24 @@ module jt12_dout(
     input             adpcmb_flag,
     input      [7:0]  psg_dout,
     input      [1:0]  addr,
-    output reg [7:0]  dout
+    output reg [7:0]  dout,
+    // Savestate. ss_hold stops the register, ss_scan shifts the scan chain
+    // (jt12_sh.v): the bits that are not constant in a YM2612.
+    input             ss_hold,
+    input             ss_scan,
+    input             ss_si,
+    output            ss_so,
+    output    [12:0]  ss_n
 );
 
 parameter use_ssg=0, use_adpcm=0;
 
-always @(posedge clk) begin
+assign ss_so = dout[7];
+assign ss_n  = 13'd3;
+
+always @(posedge clk) if( ss_scan )
+    { dout[7], dout[1:0] } <= { dout[1:0], ss_si };
+else if( !ss_hold ) begin
     casez( addr )
         2'b00: dout <= {busy, 5'd0, flag_B, flag_A }; // YM2203
         2'b01: dout <= (use_ssg  ==1) ? psg_dout : {busy, 5'd0, flag_B, flag_A };

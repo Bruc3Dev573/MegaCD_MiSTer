@@ -69,7 +69,13 @@ module jt12_lfo(
 	input				lfo_rst,
 	input				lfo_en,
 	input		[2:0]	lfo_freq,
-	output	reg	[6:0]	lfo_mod		// 7-bit width according to spritesmind.net
+	output	reg	[6:0]	lfo_mod,		// 7-bit width according to spritesmind.net
+	// Savestate. ss_hold stops the LFO, ss_scan shifts the scan chain (jt12_sh.v)
+	input				ss_hold,
+	input				ss_scan,
+	input				ss_si,
+	output				ss_so,
+	output		[12:0]	ss_n
 );
 
 reg [6:0] cnt, limit;
@@ -86,8 +92,17 @@ always @(*)
 		3'd7: limit = 7'd5;
 	endcase
 
+wire [13:0] ss_q = { lfo_mod, cnt };
+assign ss_so = ss_q[13];
+assign ss_n  = 13'd14;
+
 always @(posedge clk) 
-	if( rst || !lfo_en )
+	if( ss_scan )
+		{ lfo_mod, cnt } <= { ss_q[12:0], ss_si };
+	else if( ss_hold ) begin
+		// stopped for a savestate
+	end
+	else if( rst || !lfo_en )
 		{ lfo_mod, cnt } <= 14'd0;
 	else if( clk_en && zero) begin
 		if( cnt == limit ) begin

@@ -28,7 +28,14 @@ module jt12_pcm_interpol
     input           cen55,    // clk & cen55  =  55 kHz
     input           pcm_wr,      // advance to next sample
     input      signed [dw-1:0] pcmin,
-    output reg signed [dw-1:0] pcmout
+    output reg signed [dw-1:0] pcmout,
+    // Savestate. ss_hold stops the interpolator, ss_scan shifts the scan chain
+    // (jt12_sh.v)
+    input           ss_hold,
+    input           ss_scan,
+    input           ss_si,
+    output          ss_so,
+    output   [12:0] ss_n
 );
 
 reg [stepw-1:0] dn, pre_dn={stepw{1'b1}};
@@ -42,8 +49,18 @@ reg signed [dw-1:0] pcmnew, dx, pcmlast, pcminter;
 wire signed [dw:0]  dx_ext = { pcmin[dw-1], pcmin } - { pcmnew[dw-1], pcmnew };
 reg sign, last_pcm_wr;
 
+// Savestate scan chain: the three blocks below in order, then the divider
+localparam SS_W1 = 3 + 2*stepw + 3*dw;
+wire [SS_W1-1:0] ss_q1 = { last_pcm_wr, start_div, pre_dn, pcmnew, pcmlast, dn, dx, sign };
+wire        ss_c_div;
+wire [12:0] ss_n_div;
+assign ss_so = ss_c_div;
+assign ss_n  = SS_W1 + 2*dw + ss_n_div;
+
 // latch new data and compute the two deltas : dx and dn, slope = dx/dn
-always @(posedge clk) begin
+always @(posedge clk) if( ss_scan )
+    { last_pcm_wr, start_div, pre_dn, pcmnew, pcmlast, dn, dx, sign } <= { ss_q1[SS_W1-2:0], ss_si };
+else if( !ss_hold ) begin
     last_pcm_wr <= pcm_wr;    
     start_div   <= posedge_pcmwr;
 
@@ -70,7 +87,9 @@ wire overflow_up   = 0;//next_up[dw-1]   != pcmnew[dw-1];
 wire overflow_down = 0;//next_down[dw-1] != pcmnew[dw-1];
 
 
-always @(posedge clk) begin
+always @(posedge clk) if( ss_scan )
+    pcminter <= { pcminter[dw-2:0], ss_q1[SS_W1-1] };
+else if( !ss_hold ) begin
     if( negedge_pcmwr ) begin
         pcminter <= pcmlast;
     end else if(cen55 && !working && !pcm_wr) begin // only advance if the divider has finished
@@ -91,18 +110,24 @@ end
 
 // output only at cen55
 
-always @(posedge clk) if(cen55) pcmout <= pcminter;
+always @(posedge clk) if( ss_scan )
+    pcmout <= { pcmout[dw-2:0], pcminter[dw-1] };
+else if(cen55) pcmout <= pcminter;
 
 jt10_adpcm_div #(.dw(dw)) u_div(
     .rst_n  ( rst_n       ),
     .clk    ( clk         ),
-    .cen    ( 1'b1        ),
+    .cen    ( ~ss_hold    ),
     .start  ( start_div   ),
     .a      ( dx          ),
     .b      ( { {dw-stepw{1'b0}}, dn }   ),
     .d      ( step        ),
     .r      (             ),
-    .working( working     )
+    .working( working     ),
+    .ss_scan( ss_scan     ),
+    .ss_si  ( pcmout[dw-1]),
+    .ss_so  ( ss_c_div    ),
+    .ss_n   ( ss_n_div    )
 );
 
 
