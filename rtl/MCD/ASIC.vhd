@@ -85,6 +85,7 @@ entity ASIC is
 		CDD_RESEND		: out std_logic;	-- with CDD_SEND: the command is a frame resend, not a new write
 		CDD_REC			: in std_logic;
 		CDD_DM			: in std_logic;
+		CDD_NO_PLAY		: out std_logic;	-- one clock: software got a drive status other than play
 		
 		WORDRAM0_A   	: out std_logic_vector(15 downto 0);
 		WORDRAM0_DI		: in std_logic_vector(15 downto 0);
@@ -299,6 +300,7 @@ architecture rtl of ASIC is
 	signal HOCK_OLD 					: std_logic;
 	signal CD_SC_WR_OLD 				: std_logic;
 	signal CDD_STAT_RECEIVED 		: std_logic;
+	signal CDD_LOAD_STAT				: std_logic;	-- the next status is the first after a load
 	signal CDD_FRAME_CNT				: unsigned(17 downto 0);
 	signal SC_CNT 						: unsigned(5 downto 0);
 	signal CDC_HRD 					: std_logic;
@@ -1109,8 +1111,11 @@ begin
 			INT_PEND(6) <= '0';
 			
 			CDD_STAT_RECEIVED <= '0';
+			CDD_NO_PLAY <= '0';
+			CDD_LOAD_STAT <= '0';
 			CDD_FRAME_CNT <= (others => '0');
 		elsif rising_edge(CLK) then
+			CDD_NO_PLAY <= '0';
 			if EN = '1' then
 				SUB_RST_EXEC <= '0';
 				if MCD_RST_DONE = '1' then
@@ -1146,6 +1151,13 @@ begin
 					CDDS <= CDD_STAT;
 					CDD_STAT_RECEIVED <= '0';
 					INT_PEND(4) <= '1';
+					-- The first status after a load is the drive restore's answer: the
+					-- CDC already has its insertion state from the image, and the status
+					-- can come after the first sector of the restored stream.
+					CDD_LOAD_STAT <= '0';
+					if CDD_STAT(3 downto 0) /= x"1" and CDD_LOAD_STAT = '0' then
+						CDD_NO_PLAY <= '1';
+					end if;
 				end if;
 				
 				-- While HOCK is set the gate array clocks its command registers out to the drive
@@ -1620,6 +1632,7 @@ begin
 						--edge that the BIOS waits for.
 						CDD_REC_OLD <= '0';
 						CDD_STAT_RECEIVED <= '0';
+						CDD_LOAD_STAT <= '1';
 						HOCK_OLD <= SS_WR_DATA(22);
 						CDD_SEND <= '0';
 					when x"01" =>

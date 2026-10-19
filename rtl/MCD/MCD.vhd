@@ -165,6 +165,7 @@ architecture rtl of MCD is
 	signal CDC_DTEN_N		: std_logic;
 	signal CDC_WAIT_N		: std_logic;
 	signal CDC_INT_N		: std_logic;
+	signal CDD_NO_PLAY	: std_logic;
 	signal CDC_RAM_A_WR	: std_logic_vector(15 downto 1);
 	signal CDC_RAM_A_RD	: std_logic_vector(15 downto 0);
 	signal CDC_RAM_DI		: std_logic_vector(7 downto 0);
@@ -379,6 +380,7 @@ begin
 		CDD_RESEND 		=> CDD_RESEND,
 		CDD_REC 			=> CDD_REC,
 		CDD_DM 			=> CDD_DM,
+		CDD_NO_PLAY		=> CDD_NO_PLAY,
 		
 		WORDRAM0_A   	=> WORDRAM0_A,
 		WORDRAM0_DI   	=> WORDRAM0_DI,
@@ -488,6 +490,7 @@ begin
 		CD_DI   		=> CDC_DATA,
 		CD_WR   		=> CDC_DAT_WR,
 		CD_DOWNLOAD	=> CDC_DAT_DOWNLOAD,
+		CDD_NO_PLAY	=> CDD_NO_PLAY,
 		
 		RAM_A_WR   	=> CDC_RAM_A_WR,
 		RAM_A_RD   	=> CDC_RAM_A_RD,

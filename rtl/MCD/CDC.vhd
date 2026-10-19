@@ -30,6 +30,8 @@ entity CDC is
 		--High while one sector (data or CD-DA) is handed over, from before its first word
 		--to after its last. Each hand-over starts a sector.
 		CD_DOWNLOAD	: in std_logic := '0';
+		--One clock when software gets a drive status other than play (pause, stop, seek...).
+		CDD_NO_PLAY	: in std_logic := '0';
 		
 		RAM_A_WR   	: out std_logic_vector(15 downto 1);
 		RAM_A_RD   	: out std_logic_vector(15 downto 0);
@@ -182,6 +184,7 @@ architecture rtl of CDC is
 	signal DEC_MID : std_logic;
 	signal FRAME_END : unsigned(19 downto 0);
 	signal FRAME_MID : unsigned(19 downto 0);
+	signal FRAME_HALF : unsigned(19 downto 0);
 	signal STREAM_SEEN : std_logic;
 	signal SECTOR_END : std_logic;
 	signal SECTOR_ACTIVE : std_logic;
@@ -583,16 +586,24 @@ begin
 	RAM_WE <= DEC_WR and DEC_WR_EN and CTRL0(DECEN);
 
 	-- 75 Hz decoder frame timer, restarted by each sector that arrives from the drive.
-	-- Sync insertion runs only until the first sector after the decoder is enabled. Main
-	-- hands sectors over on a millisecond timer, so once the stream has started a missing
-	-- sector cannot be told from a late one, and an insertion carries no data (Crime Patrol
-	-- hung when an insertion in the stream still read the previous sector's header).
+	-- Sync insertion runs until the first sector after the decoder is enabled. Main hands
+	-- sectors over on a millisecond timer, so in a stream a missing sector cannot be told
+	-- from a late one, and an insertion carries no data (Crime Patrol hung when an
+	-- insertion in the stream still read the previous sector's header). Insertion starts
+	-- again when the drive reports a status other than play, as after a pause, a stop or
+	-- the seek of a new play, and stops at the next sector. While Main stalls, during a
+	-- slot file write, no status comes, so a stalled stream gets no insertion. The frames
+	-- of the restarted insertion fall half a frame after the slots of the stream: Main's
+	-- next sectors keep that cadence, so the first one does not come right after an
+	-- insertion, where software busy with the insertion's interrupt can miss its own.
 	FRAME_END <= to_unsigned(709378, 20) when PALSW = '1' else to_unsigned(715908, 20);
 	FRAME_MID <= to_unsigned(283751, 20) when PALSW = '1' else to_unsigned(286363, 20);
+	FRAME_HALF <= '0' & FRAME_END(19 downto 1);
 	--The frame timer stops while frozen and restarts from zero after a save or a load.
 	--Word 9 bit 0 saves "no sector yet" (not STREAM_SEEN), so a load in the middle of a
 	--stream inserts no sync while Main restarts the sectors, and a state from an older
-	--build, where the word reads zero, loads as a running stream.
+	--build, where the word reads zero, loads as a running stream. A load after a pause or
+	--stop status restores the restarted insertion from the same bit.
 	process( RESET_N, CLK )
 	begin
 		if RESET_N = '0' then
@@ -620,6 +631,18 @@ begin
 			else
 				FRAME_CNT <= FRAME_CNT + 1;
 				if FRAME_CNT = FRAME_MID then
+					DEC_MID <= '1';
+				end if;
+			end if;
+			if CDD_NO_PLAY = '1' and SS_FREEZE = '0' and STREAM_SEEN = '1' then
+				STREAM_SEEN <= '0';
+				if FRAME_CNT >= FRAME_HALF then
+					FRAME_CNT <= FRAME_CNT - FRAME_HALF;
+				else
+					FRAME_CNT <= FRAME_CNT + FRAME_HALF;
+				end if;
+				-- The jump passes the release point of the last sector's DECI.
+				if FRAME_CNT < FRAME_MID then
 					DEC_MID <= '1';
 				end if;
 			end if;
