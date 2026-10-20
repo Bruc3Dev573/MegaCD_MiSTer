@@ -1166,6 +1166,12 @@ begin
 				-- count on each software write so a written command is not sent twice. The
 				-- drive is told which handovers are such resends, so it can tell them from a
 				-- command software wrote again.
+				-- The frame follows the drive: a status restarts the count so that the resend
+				-- comes 5 ms (62500 ticks) after it, once software had the time to write its
+				-- own command. Counted from HOCK rising alone, the resends could fall right at
+				-- the drive's own frame, and the drive, which answers each frame in which a
+				-- command came, then saw two commands in one frame and none in the next and
+				-- skipped a status.
 				CDD_SEND <= '0';
 				if HOCK = '0' then
 					CDD_FRAME_CNT <= (others => '0');
@@ -1173,6 +1179,8 @@ begin
 					CDD_SEND <= '1';
 					CDD_RESEND <= '0';
 					CDD_FRAME_CNT <= (others => '0');
+				elsif CDD_REC = '1' and CDD_REC_OLD = '0' then
+					CDD_FRAME_CNT <= to_unsigned(166666 - 62500, CDD_FRAME_CNT'length);
 				elsif CLK_12M_F = '1' then
 					if CDD_FRAME_CNT = 166666 then
 						CDD_SEND <= '1';
