@@ -186,6 +186,8 @@ architecture rtl of CDC is
 	signal FRAME_MID : unsigned(19 downto 0);
 	signal FRAME_HALF : unsigned(19 downto 0);
 	signal STREAM_SEEN : std_logic;
+	-- The last decoder interrupt was a sync insertion frame: STAT0 reads NOSYNC and no CRCOK.
+	signal INS_BLK : std_logic;
 	signal SECTOR_END : std_logic;
 	signal SECTOR_ACTIVE : std_logic;
 --	signal DECI_WAIT_CNT : unsigned(15 downto 0);
@@ -233,7 +235,7 @@ begin
 		"00000" & OLD_WRRQ & OLD_RD_N & OLD_WR_N & x"000000"
 		                                                 when SS_ADDR = "000111" else
 		"00000000000000000000000" & FIFO_DATA0           when SS_ADDR = "001000" else
-		"0000000000000000000000000000000" & not STREAM_SEEN when SS_ADDR = "001001" else
+		"000000000000000000000000000000" & INS_BLK & not STREAM_SEEN when SS_ADDR = "001001" else
 		(others => '0');
 	
 	process( RESET_N, CLK )
@@ -342,7 +344,10 @@ begin
 							when x"B" =>			--R11 WAH
 								DO <= WA(15 downto 8);
 							when x"C" =>			--R12 STAT0
-								DO <= STAT0;
+								-- A block timed by the inserted sync reads NOSYNC [LC p.48], and its CRC
+								-- check, made on no data, fails.
+								DO <= (STAT0(CRCOK) and not INS_BLK) & STAT0(ILSYNC) & INS_BLK &
+								      STAT0(4 downto 0);
 							when x"D" =>			--R13 STAT1
 								DO <= STAT1;
 							when x"E" =>			--R14 STAT2
@@ -392,6 +397,7 @@ begin
 			HEAD1 <= (others => '0');
 			HEAD2 <= (others => '0');
 			HEAD3 <= x"01";
+			INS_BLK <= '0';
 			
 			CD_WR_OLD <= '0';
 			WORD_CNT <= (others => '0');
@@ -426,6 +432,7 @@ begin
 				elsif DEC_FRAME = '1' and CTRL1(SYIEN) = '1' and SECTOR_ACTIVE = '0' then
 					IFSTAT(DECI) <= '0';
 					STAT3(VALST) <= '0';
+					INS_BLK <= '1';
 					HEAD0 <= x"01";
 					HEAD1 <= x"80";
 					HEAD2 <= x"00";
@@ -464,6 +471,7 @@ begin
 						when x"F" =>			--R15 RESET
 							IFSTAT(DECI) <= '1';
 							STAT3(VALST) <= '1';
+							INS_BLK <= '0';
 						when others => null;
 					end case;
 				elsif REG_RD = '1' then
@@ -521,6 +529,7 @@ begin
 --							DECI_SET <= '1';
 							IFSTAT(DECI) <= '0';
 							STAT3(VALST) <= '0';
+							INS_BLK <= '0';
 							SECTOR_END <= '1';
 						end if;
 						
@@ -558,6 +567,7 @@ begin
 						SECTOR_ACTIVE <= '0';
 						SECTOR_END <= '0';
 					when "000001" => STAT3(VALST) <= SS_WR_DATA(24 + VALST);
+					when "001001" => INS_BLK <= SS_WR_DATA(1);
 					when "000011" =>
 						PT <= SS_WR_DATA(15 downto 0);
 						WA <= SS_WR_DATA(31 downto 16);
@@ -603,7 +613,8 @@ begin
 	--Word 9 bit 0 saves "no sector yet" (not STREAM_SEEN), so a load in the middle of a
 	--stream inserts no sync while Main restarts the sectors, and a state from an older
 	--build, where the word reads zero, loads as a running stream. A load after a pause or
-	--stop status restores the restarted insertion from the same bit.
+	--stop status restores the restarted insertion from the same bit. Bit 1 saves INS_BLK
+	--(STAT0 of an inserted block); an older build's 0 there reads as a decoded block.
 	process( RESET_N, CLK )
 	begin
 		if RESET_N = '0' then
