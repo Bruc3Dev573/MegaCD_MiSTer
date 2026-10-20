@@ -1141,9 +1141,13 @@ begin
 				
 				CDD_REC_OLD <= CDD_REC;
 				HOCK_OLD <= HOCK;
-				if CDD_REC = '1' and CDD_REC_OLD = '0' then
-					CDD_STAT_RECEIVED <= '1';
-				elsif HOCK = '1' and HOCK_OLD = '0' then
+				-- The level 4 interrupt comes when a status has been received (hardware manual,
+				-- CDD interrupt), and the drive talks only while HOCK is set. Setting HOCK raises
+				-- none by itself, and a status that came while HOCK was clear (Main answers the
+				-- reset command, for one) is dropped instead of being taken when HOCK rises:
+				-- the drive's first status follows within a frame, as the command resends begin
+				-- when HOCK rises.
+				if CDD_REC = '1' and CDD_REC_OLD = '0' and HOCK = '1' then
 					CDD_STAT_RECEIVED <= '1';
 				end if;
 				
