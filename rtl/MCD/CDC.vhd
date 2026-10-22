@@ -47,6 +47,10 @@ entity CDC is
 		SS_RD_DATA	: out std_logic_vector(31 downto 0);
 		SS_QUIET		: out std_logic;
 		SS_FREEZE	: in std_logic := '0';
+		--The sub-CPU is parked for a savestate (before and after SS_FREEZE): the frame
+		--timer holds, so a decoder interrupt the sub-CPU has not taken yet keeps its
+		--status registers valid until it runs again.
+		SS_PARK		: in std_logic := '0';
 		--Stream position as the BCD MSF header of the last decoded sector.
 		--CDD status lags delivery by one or two sectors, so the drive is restored
 		--from it to avoid sending sectors the CDC already consumed.
@@ -610,6 +614,10 @@ begin
 	FRAME_MID <= to_unsigned(283751, 20) when PALSW = '1' else to_unsigned(286363, 20);
 	FRAME_HALF <= '0' & FRAME_END(19 downto 1);
 	--The frame timer stops while frozen and restarts from zero after a save or a load.
+	--It also holds while the sub-CPU is parked for a savestate, before and after the
+	--freeze: the rest of the gate array runs then, and a frame timer running on would
+	--release DECI and VALST of a sector the sub-CPU had not taken yet, whose status the
+	--BIOS then read as invalid when it ran again (Dune (USA) read again after a save).
 	--Word 9 bit 0 saves "no sector yet" (not STREAM_SEEN), so a load in the middle of a
 	--stream inserts no sync while Main restarts the sectors, and a state from an older
 	--build, where the word reads zero, loads as a running stream. A load after a pause or
@@ -636,6 +644,8 @@ begin
 			elsif SECTOR_END = '1' then
 				FRAME_CNT <= (others => '0');
 				STREAM_SEEN <= '1';
+			elsif SS_PARK = '1' then
+				null;
 			elsif FRAME_CNT = FRAME_END then
 				FRAME_CNT <= (others => '0');
 				DEC_FRAME <= not STREAM_SEEN;

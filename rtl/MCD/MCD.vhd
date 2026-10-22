@@ -114,6 +114,7 @@ end MCD;
 
 architecture rtl of MCD is
 
+	signal S68K_PARKED	: std_logic;
 	signal S68K_A   		: std_logic_vector(23 downto 1);
 	signal S68K_DI			: std_logic_vector(15 downto 0);
 	signal S68K_DO			: std_logic_vector(15 downto 0);
@@ -233,6 +234,8 @@ architecture rtl of MCD is
 	
 begin
 
+	SS_S68K_FROZEN <= S68K_PARKED;
+
 	gg : CODES
 	generic map(
 		ADDR_WIDTH  => 24,
@@ -275,7 +278,7 @@ begin
 		BGACK_N   	=> '1',
 
 		SS_FREEZE	=> SS_FREEZE,
-		SS_FROZEN	=> SS_S68K_FROZEN,
+		SS_FROZEN	=> S68K_PARKED,
 		SS_ADDR		=> SS_S68K_ADDR,
 		SS_WR_DATA	=> SS_S68K_WR_DATA,
 		SS_WR_EN		=> SS_S68K_WR_EN,
@@ -504,6 +507,7 @@ begin
 		SS_RD_DATA	=> SS_CDC_RD_DATA,
 		SS_QUIET		=> SS_CDC_QUIET,
 		SS_FREEZE	=> SS_ACTIVE,
+		SS_PARK		=> S68K_PARKED,
 		SS_HEAD_MSF	=> SS_CDC_HEAD,
 		SS_DBG		=> SS_CDC_DBG
 	);
