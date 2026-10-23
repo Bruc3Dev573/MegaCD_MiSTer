@@ -112,6 +112,9 @@ entity ASIC is
 		--SS_QUIET is high only when every engine that can be mid-transfer is at rest.
 		--A state captured during a transfer restores into a transfer that never ends.
 		SS_FREEZE		: in std_logic := '0';
+		--The sub-CPU is parked for a savestate (before and after SS_FREEZE): the timer and
+		--the stopwatch hold, so the sub-CPU sees no time pass while it is parked.
+		SS_PARK			: in std_logic := '0';
 		--Blocks new CDC DMA handshakes while a freeze waits for quiet.
 		--An open transfer still drains before SS_FREEZE stops the ASIC.
 		SS_QUIESCE		: in std_logic := '0';
@@ -1582,7 +1585,11 @@ begin
 					INT_PEND(3) <= '0';
 				end if;
 				
-				if CLK_12M_F = '1' then
+				--The timer and the stopwatch stop while the sub-CPU is parked for a savestate. The
+				--rest of the gate array runs then; a timer running on fired the interrupts of that
+				--time as one at the release and came back at a new phase against the sub-CPU's work
+				--(Dune (USA) then found its DMA not done at its next timer tick and read again).
+				if CLK_12M_F = '1' and SS_PARK = '0' then
 					TIME_CLK_CNT <= TIME_CLK_CNT + 1;
 					if TIME_CLK_CNT = "101111111" then	-- 384 clocks of 12.5 MHz = 30.72 us
 						TIME_CLK_CNT <= (others => '0');
