@@ -1792,9 +1792,10 @@ always @(posedge clk_sys) begin
 	else if (ss_freeze_ack)  ss_freeze_active <= 1;
 end
 
-// The raster keeps running. Hold CPUs and CD delivery until the saved H/V phase,
-// then restore pending interrupts, the sprite status flags and HINT countdown. A
-// mode change that makes the phase unreachable is bounded by 2^22 clocks (~78 ms).
+// The raster keeps running. Hold CPUs and CD delivery until the saved H/V phase (and
+// field, in interlace modes), then restore pending interrupts, the sprite status flags
+// and HINT countdown. A mode change that makes the phase unreachable is bounded by
+// 2^22 clocks (~78 ms).
 wire ss_vdp_phase_ok;
 reg  ss_resume_hold = 0;
 reg  ss_vdp_resume  = 0;

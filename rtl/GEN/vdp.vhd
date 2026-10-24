@@ -974,7 +974,10 @@ begin
 	end if;
 end process;
 
-SS_PHASE_OK <= '1' when HV_VCNT = PARK_W11(17 downto 9) and HV_HCNT = PARK_W11(8 downto 0) else '0';
+-- In interlace modes (LSM(0)) the field is part of the phase: ODD and the HV counter
+-- show it, so the CPUs are released only in the saved field, one frame later at most.
+SS_PHASE_OK <= '1' when HV_VCNT = PARK_W11(17 downto 9) and HV_HCNT = PARK_W11(8 downto 0) and
+                        (LSM(0) = '0' or FIELD = PARK_W11(22)) else '0';
 
 -- VDP_REGS holds architectural state. Drained pipeline state is re-derived.
 SS_VDPREG_RD <=
