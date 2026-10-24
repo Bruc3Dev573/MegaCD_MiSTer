@@ -312,6 +312,10 @@ architecture rtl of ASIC is
 	signal OLD_CDC_INT_N 			: std_logic;
 	signal SW_CLR 						: std_logic;
 	signal TIMER_SET 					: std_logic;
+	--Savestate: the SBA entry pair of words 16 to 47, and whether the image being loaded
+	--holds all 64 entries there (w1 bit 31).
+	signal SS_SBA_IDX					: unsigned(4 downto 0);
+	signal SS_SBA_FULL				: std_logic;
 	signal GEN_S68K_HALT				: std_logic;
 	
 	signal PCMA 						: PcmAccess_t;
@@ -687,8 +691,8 @@ begin
 		         BK & PM & RET1 & RET0 & DMNA1 & DMNA0 & MODE & IFL2 & SBRQ &
 		         SRES & LEDG & LEDR & RES0
 			when SS_ADDR = x"00" else
-		--w1
-		"0000000" & DOT & LN & SC1 & SC0 & DD & WP
+		--w1, bit 31 set: words 16 to 47 hold the 64 SBA entries in order
+		"1" & "000000" & DOT & LN & SC1 & SC0 & DD & WP
 			when SS_ADDR = x"01" else
 		--w2
 		"0000" & SW & HD
@@ -717,9 +721,9 @@ begin
 		CS(to_integer(unsigned(SS_ADDR(1 downto 0)) & "0"))
 			when SS_ADDR(7 downto 2) = "000011" else
 		--w16 to w47 SBA, 64 entries, two per word
-		SBA(to_integer(unsigned(SS_ADDR(4 downto 0)) & "1")) &
-		SBA(to_integer(unsigned(SS_ADDR(4 downto 0)) & "0"))
-			when SS_ADDR(7 downto 5) = "000" and unsigned(SS_ADDR) >= 16 else
+		SBA(to_integer(SS_SBA_IDX & "1")) &
+		SBA(to_integer(SS_SBA_IDX & "0"))
+			when unsigned(SS_ADDR) >= 16 and unsigned(SS_ADDR) < 48 else
 		--w48 and w49 CDD status, 40 bits
 		CDDS(31 downto 0)                      when SS_ADDR = x"30" else
 		x"000000" & CDDS(39 downto 32)         when SS_ADDR = x"31" else
@@ -746,6 +750,8 @@ begin
 			when SS_ADDR = x"38" else
 		(others => '0');
 	
+	SS_SBA_IDX <= resize(unsigned(SS_ADDR(5 downto 0)) - 16, 5);
+
 	CDC_HRD_N <= not CDC_HRD;
 	
 	
@@ -1660,6 +1666,7 @@ begin
 						SC1 <= SS_WR_DATA(18 downto 15);
 						LN  <= SS_WR_DATA(21 downto 19);
 						DOT <= SS_WR_DATA(24 downto 22);
+						SS_SBA_FULL <= SS_WR_DATA(31);
 					when x"02" =>
 						SW <= SS_WR_DATA(27 downto 16);
 					when x"03" =>
@@ -1694,10 +1701,15 @@ begin
 						CDD_FRAME_CNT <= unsigned(SS_WR_DATA(17 downto 0));
 					when others =>
 						--CS and SBA are arrays indexed by address, so they are restored here.
+						--Images without w1 bit 31 hold only SBA entries 32 to 63, in words 16
+						--to 31. Those load as before: entries 0 to 31 are left as they are.
 						if SS_ADDR(7 downto 2) = "000011" then
 							CS(to_integer(unsigned(SS_ADDR(1 downto 0)) & "0")) <= SS_WR_DATA(15 downto 0);
 							CS(to_integer(unsigned(SS_ADDR(1 downto 0)) & "1")) <= SS_WR_DATA(31 downto 16);
-						elsif SS_ADDR(7 downto 5) = "000" and unsigned(SS_ADDR) >= 16 then
+						elsif unsigned(SS_ADDR) >= 16 and unsigned(SS_ADDR) < 48 and SS_SBA_FULL = '1' then
+							SBA(to_integer(SS_SBA_IDX & "0")) <= SS_WR_DATA(15 downto 0);
+							SBA(to_integer(SS_SBA_IDX & "1")) <= SS_WR_DATA(31 downto 16);
+						elsif SS_ADDR(7 downto 4) = "0001" then
 							SBA(to_integer(unsigned(SS_ADDR(4 downto 0)) & "0")) <= SS_WR_DATA(15 downto 0);
 							SBA(to_integer(unsigned(SS_ADDR(4 downto 0)) & "1")) <= SS_WR_DATA(31 downto 16);
 						end if;
