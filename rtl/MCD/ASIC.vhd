@@ -103,14 +103,16 @@ entity ASIC is
 		LED_GREEN		: out std_logic;
 
 		--Savestate access to the Gate Array, CDD, timer and interrupt state.
-		--Capture waits for arbitration and DMA to drain. Restore resets their FSMs to idle.
+		--Capture waits for arbitration and DMA to drain, except for a CDC DMA word waiting
+		--for Word RAM that the main CPU holds (DMA_WRAM_WAIT), saved with the transfer in
+		--w55 and w56. Restore resets the FSMs to idle, or to that transfer.
 		SS_ADDR			: in std_logic_vector(7 downto 0) := (others => '0');
 		SS_WR_DATA		: in std_logic_vector(31 downto 0) := (others => '0');
 		SS_WR_EN			: in std_logic := '0';
 		SS_RD_DATA		: out std_logic_vector(31 downto 0);
 
-		--SS_QUIET is high only when every engine that can be mid-transfer is at rest.
-		--A state captured during a transfer restores into a transfer that never ends.
+		--SS_QUIET is high when every engine is at rest or in a state the image holds
+		--(DMA_WRAM_WAIT). Moving transfers keep it low.
 		SS_FREEZE		: in std_logic := '0';
 		--The sub-CPU is parked for a savestate (before and after SS_FREEZE): the timer and
 		--the stopwatch hold, so the sub-CPU sees no time pass while it is parked.

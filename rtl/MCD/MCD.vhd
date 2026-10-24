@@ -537,8 +537,8 @@ begin
 	--Audio is held while the savestate stream runs.
 	--PCM is not clocked by the sub-CPU enables, so it would keep advancing WRA
 	--during capture.
-	--A held CD_DAC FIFO fills and drops MCD_CDDA_WR_READY. Main then stops
-	--advancing the LBA, so its CD drive model stops too.
+	--Main sends no sector meanwhile: MegaCD.sv reports neither data nor CD-DA
+	--readiness to it while the CPUs are held, so its CD drive model stops too.
 	MCD_EN_AUDIO <= ENABLE and not SS_ACTIVE;
 
 	--Sub-device savestate bus fan-out. One write enable per device so a word

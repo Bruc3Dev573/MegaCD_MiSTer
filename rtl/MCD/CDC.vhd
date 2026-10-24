@@ -39,8 +39,9 @@ entity CDC is
 		RAM_DO		: out std_logic_vector(15 downto 0);
 		RAM_WE		: out std_logic;
 
-		--Savestate region CDC_REGS. TS, the host transfer FSM, is not saved.
-		--SS_QUIET holds off the freeze until TS is idle.
+		--Savestate region CDC_REGS. TS, the host transfer FSM, is not saved. SS_QUIET holds
+		--off the freeze until TS is idle or in TS_SEND_WAIT, which a load rebuilds from the
+		--staged byte in FIFO_DATA0.
 		SS_ADDR		: in std_logic_vector(5 downto 0) := (others => '0');
 		SS_WR_DATA	: in std_logic_vector(31 downto 0) := (others => '0');
 		SS_WR_EN		: in std_logic := '0';
