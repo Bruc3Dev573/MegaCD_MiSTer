@@ -196,7 +196,6 @@ architecture rtl of CDC is
 	signal SECTOR_ACTIVE : std_logic;
 --	signal DECI_WAIT_CNT : unsigned(15 downto 0);
 --	signal DECI_SET : std_logic;
-	signal OLD_WRRQ : std_logic;
 	
 begin
 
@@ -233,10 +232,11 @@ begin
 		"0" & CD_WR_OLD & DT_EN & DEC_WR & DEC_WR_EN &
 		std_logic_vector(WORD_CNT) & DEC_DAT             when SS_ADDR = "000110" else
 		--Bits 23..0 held the decoder buffer offsets, which are now derived from PT and
-		--WORD_CNT. They read 0 and an older image's values there are ignored. DEC_ADDR
-		--is not saved: it is latched with each word and used only by the write pulse
-		--of the next clock, and DEC_WR is cleared on every clock, also while frozen.
-		"00000" & OLD_WRRQ & OLD_RD_N & OLD_WR_N & x"000000"
+		--WORD_CNT. They read 0 and an older image's values there are ignored, as is
+		--bit 26, which held an undriven signal. DEC_ADDR is not saved: it is latched
+		--with each word and used only by the write pulse of the next clock, and DEC_WR
+		--is cleared on every clock, also while frozen.
+		"000000" & OLD_RD_N & OLD_WR_N & x"000000"
 		                                                 when SS_ADDR = "000111" else
 		"00000000000000000000000" & FIFO_DATA0           when SS_ADDR = "001000" else
 		"000000000000000000000000000000" & INS_BLK & not STREAM_SEEN when SS_ADDR = "001001" else
