@@ -131,7 +131,8 @@ entity T80 is
 		DIRSet     : in  std_logic := '0';
 		DIR        : in  std_logic_vector(211 downto 0) := (others => '0'); -- IFF2, IFF1, IM, IY, HL', DE', BC', IX, HL, DE, BC, PC, SP, R, I, F', A', F, A
 		DIRHalt    : in  std_logic := '0'; -- HALT state, restored with DIRSet (HALT_n is its output)
-		DIRSeq     : in  std_logic_vector(111 downto 0) := (others => '0') -- SEQ, restored with DIRSet if bit 0 is set
+		DIRSeq     : in  std_logic_vector(111 downto 0) := (others => '0'); -- SEQ, restored with DIRSet if bit 0 is set
+		DIRSeqOk   : in  std_logic := '0' -- DIRSeq holds a saved SEQ (bit 0 set or not): WZ is restored with DIRSet
 	);
 end T80;
 
@@ -462,6 +463,11 @@ begin
 				Read_To_Reg_r <= "00000";
 				Save_ALU_r <= '0';
 				ALU_Op_r <= "0000";
+				-- WZ (MEMPTR) is state between instructions too: BIT n,(HL) takes flags X and
+				-- Y from it. Restored whenever the image holds SEQ.
+				if DIRSeqOk = '1' then
+					WZ <= DIRSeq(63 downto 48);
+				end if;
 				-- A core saved with the bus acknowledged resumes the instruction it was in, at
 				-- the last T state of the machine cycle the bus request stopped (see SEQ).
 				if DIRSeq(0) = '1' then

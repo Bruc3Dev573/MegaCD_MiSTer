@@ -186,6 +186,7 @@ module gen
 	input         SS_Z80_HALT_DIR,  // applied with SS_Z80_DIRSET
 	output [119:0] SS_Z80_SEQ,      // T80 SEQ: with BUSAK low, the instruction the bus request stopped
 	input  [119:0] SS_Z80_SEQ_DIR,  // applied with SS_Z80_DIRSET if bit 0 (BUSAK) is set
+	input         SS_Z80_SEQ_OK,    // SS_Z80_SEQ_DIR holds a saved SEQ: its WZ is applied with SS_Z80_DIRSET
 	output  [8:0] SS_Z80_BAR,       // bank register, A23-A15
 	input   [8:0] SS_Z80_BAR_DIR,
 	output  [1:0] SS_Z80_CTRL,      // Z80 reset and bus request lines, A11200 and A11100
@@ -1121,6 +1122,7 @@ T80pa Z80
 	.DIR(SS_Z80_DIR),
 	.DIRHalt(SS_Z80_HALT_DIR),
 	.DIRSeq(SS_Z80_SEQ_DIR),
+	.DIRSeqOk(SS_Z80_SEQ_OK),
 //	.CEN(Z80_CLKENn),
 	.BUSRQ_n(Z80_BUSRQ_N),
 	.BUSAK_n(Z80_BUSAK_N),

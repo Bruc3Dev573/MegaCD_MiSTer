@@ -650,6 +650,7 @@ gen gen
 	.SS_Z80_HALT_DIR(ss_z80_halt_dir),
 	.SS_Z80_SEQ(ss_z80_seq),
 	.SS_Z80_SEQ_DIR(ss_z80_seq_dir),
+	.SS_Z80_SEQ_OK(ss_z80_seq_ok),
 	.SS_Z80_BAR(ss_z80_bar),
 	.SS_Z80_BAR_DIR(ss_z80_bar_dir),
 	.SS_Z80_CTRL(ss_z80_ctrl),
@@ -1952,9 +1953,10 @@ end
 //   bits 8-0: bank register (A23-A15)
 //   bit 9:    BUSRQ_N, bit 10: RESET_N (A11100 and A11200)
 //   bit 11:   HALT
-//   bit 12:   words 8-11 hold T80 SEQ (bits 119-0), the rest of an instruction the bus
-//             request stopped (BUSAK low, SEQ bit 0). Older images, without them, resume
-//             at the next opcode fetch as before.
+//   bit 12:   words 8-11 hold T80 SEQ (bits 119-0): WZ, restored from every image that has
+//             them, and the rest of an instruction the bus request stopped (BUSAK low, SEQ
+//             bit 0). Older images, without them, keep the Z80's WZ and resume at the next
+//             opcode fetch as before.
 // Words 12-31 are spare. The restore is one DIRSet pulse, two clocks after word 11: T80
 // latches the whole register file at once, and a Z80 taken out of reset by word 7 must be
 // out of it by then.
@@ -1967,7 +1969,7 @@ reg   [8:0] ss_z80_bar_dir_r;
 reg   [1:0] ss_z80_ctrl_dir_r;
 reg         ss_z80_ext_set_r;
 reg [119:0] ss_z80_seq_dir_r;
-reg         ss_z80_seq_ok;
+reg         ss_z80_seq_ok_r;
 reg         ss_z80_dirset_d, ss_z80_dirset_r;
 always @(posedge clk_sys) begin
 	ss_z80_dirset_d <= 0;
@@ -1989,7 +1991,7 @@ always @(posedge clk_sys) begin
 				ss_z80_bar_dir_r  <= ss_state_dout[8:0];
 				ss_z80_ctrl_dir_r <= ss_state_dout[10:9];
 				ss_z80_ext_set_r  <= ss_state_dout[31];
-				ss_z80_seq_ok     <= ss_state_dout[12];
+				ss_z80_seq_ok_r   <= ss_state_dout[12];
 			end
 			5'd8:  ss_z80_seq_dir_r[ 31: 0] <= ss_state_dout;
 			5'd9:  ss_z80_seq_dir_r[ 63:32] <= ss_state_dout;
@@ -2003,6 +2005,7 @@ always @(posedge clk_sys) begin
 	end
 end
 wire [211:0] ss_z80_dir     = ss_z80_dir_r;
+wire         ss_z80_seq_ok  = ss_z80_seq_ok_r;
 wire [119:0] ss_z80_seq_dir  = ss_z80_seq_ok ? ss_z80_seq_dir_r : 120'd0;
 wire         ss_z80_halt_dir = ss_z80_halt_dir_r;
 wire   [8:0] ss_z80_bar_dir = ss_z80_bar_dir_r;

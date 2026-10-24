@@ -88,7 +88,8 @@ entity T80pa is
 		DIRSet      : in  std_logic := '0';
 		DIR         : in  std_logic_vector(211 downto 0) := (others => '0'); -- IFF2, IFF1, IM, IY, HL', DE', BC', IX, HL, DE, BC, PC, SP, R, I, F', A', F, A
 		DIRHalt     : in  std_logic := '0';               -- HALT state, restored with DIRSet
-		DIRSeq      : in  std_logic_vector(119 downto 0) := (others => '0') -- SEQ, restored with DIRSet if bit 0 is set
+		DIRSeq      : in  std_logic_vector(119 downto 0) := (others => '0'); -- SEQ, restored with DIRSet if bit 0 is set
+		DIRSeqOk    : in  std_logic := '0'                -- DIRSeq holds a saved SEQ: WZ is restored with DIRSet
 	);
 end T80pa;
 
@@ -148,7 +149,8 @@ begin
 			DIRSet  => DIRSet,
 			DIR     => DIR,
 			DIRHalt => DIRHalt,
-			DIRSeq  => DIRSeq(111 downto 0)
+			DIRSeq  => DIRSeq(111 downto 0),
+			DIRSeqOk => DIRSeqOk
 		);
 
 	process(CLK)
