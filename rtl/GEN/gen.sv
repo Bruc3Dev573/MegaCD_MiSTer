@@ -162,7 +162,7 @@ module gen
 	output [31:0] SS_VDP_RD_DATA,
 	output        SS_VDP_QUIET,
 	input         SS_VDP_PARK,     // freeze granted, VDP latches its raster phase
-	input         SS_VDP_RESUME,   // 1 clock at release, latched pending bits return
+	input         SS_VDP_RESUME,   // 1 clock at release, latched pending and sprite status bits return
 	output        SS_VDP_PHASE_OK, // live raster is back at the parked position
 
 	// FM (region FM_SHADOW, see fm_savestate.sv): the register shadow and the chip state.

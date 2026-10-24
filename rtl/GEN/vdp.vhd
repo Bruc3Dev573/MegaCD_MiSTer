@@ -3899,6 +3899,11 @@ begin
 		elsif SCOL_CLR = '1' then
 			SCOL <= '0';
 		end if;
+		-- Sticky until a status read, so restored at release from the park latch, as
+		-- the interrupt pending bits. A collision rendered while parked is dropped.
+		if SS_RESUME = '1' then
+			SCOL <= PARK_W10(18);
+		end if;
 	end if;	
 end process;
 
@@ -3912,6 +3917,10 @@ begin
 			SOVR <= '1';
 		elsif SOVR_CLR = '1' then
 			SOVR <= '0';
+		end if;
+		-- Restored at release, as SCOL.
+		if SS_RESUME = '1' then
+			SOVR <= PARK_W10(17);
 		end if;
 	end if;	
 end process;
