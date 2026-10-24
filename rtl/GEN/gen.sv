@@ -173,7 +173,6 @@ module gen
 	output [31:0] SS_FM_RD_DATA,
 	output        SS_FM_READY,
 	input         SS_FM_REPLAY,   // 1-cycle pulse after a load completes
-	output        SS_FM_REPLAYING,
 
 	// Z80 architectural state (region Z80_REGS): the T80 registers, 212 bits over words 0-6,
 	// in word 7 the HALT state, the bank register, the bus request and the reset, and in
@@ -1090,7 +1089,6 @@ wire        Z80_IO_PRE = ~Z80_MREQ_N & Z80_RFSH_N;
 // the end of any machine cycle and SEQ holds the rest of the instruction.
 // T80 provides the 212-bit REG/DIRSet/DIR state interface. A DIRSet restarts the fetch,
 // or with SEQ_DIR resumes the instruction the bus request stopped.
-wire Z80_M1_N;
 wire Z80_HALT_N;
 wire Z80_INST_BOUND;
 // Engage at an edge without Z80_CLKENp: at an edge with it, T80 leaves the state the
@@ -1113,7 +1111,7 @@ T80pa Z80
 	.CLK(MCLK),
 	.CEN_p(Z80_CLKENp_G),
 	.CEN_n(Z80_CLKENn_G),
-	.M1_n(Z80_M1_N),
+	.M1_n(),
 	.HALT_n(Z80_HALT_N),
 	.REG(SS_Z80_REG),
 	.InstBound(Z80_INST_BOUND),
@@ -1352,7 +1350,7 @@ fm_savestate fm
 	.ss_rd_data(SS_FM_RD_DATA),
 	.ss_ready(SS_FM_READY),
 	.ss_replay(SS_FM_REPLAY),
-	.ss_replaying(SS_FM_REPLAYING)
+	.ss_replaying()
 );
 
 wire signed [15:0] fm_adjust_l = (FM_left << 4) + (FM_left << 2) + (FM_left << 1) + (FM_left >>> 2);

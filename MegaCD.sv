@@ -635,7 +635,6 @@ gen gen
 	.SS_FM_RD_DATA(ss_fm_rd_data),
 	.SS_FM_READY(ss_fm_ready),
 	.SS_FM_REPLAY(ss_load_done),
-	.SS_FM_REPLAYING(ss_fm_replaying),
 
 	.SS_PSG_ADDR(ss_psg_addr),
 	.SS_PSG_WR_DATA(ss_state_dout),
@@ -675,7 +674,6 @@ wire        ss_fm_wr_en;
 wire        ss_fm_rd_en;
 wire [31:0] ss_fm_rd_data;
 wire        ss_fm_ready;
-wire        ss_fm_replaying;
 
 wire  [1:0] ss_vdp_sel;
 wire  [7:0] ss_vdp_addr;
