@@ -37,7 +37,6 @@ module savestate
 	// State data interface
 	output [31:0] state_addr,   // Address for state data (in 32-bit words)
 	output        state_wr,     // Write enable for save
-	output        state_rd,     // Read enable for load
 	input  [31:0] state_din,    // Data from core (for save)
 	output [31:0] state_dout,   // Data to core (for load)
 	output        state_we,     // Write enable to core (for load)
@@ -135,7 +134,6 @@ reg [1:0] ss_load_sync = 0;
 reg [1:0] ss_save_sync = 0;
 reg old_ss_save;
 reg old_ss_load;
-reg data_ready;
 reg [1:0] wait_count;   // Counter for RAM read latency
 reg is_loading;  // Flag to distinguish save vs load operation
 reg [19:0] cooldown_count;  // Delay before the next request is accepted
@@ -177,7 +175,6 @@ assign freeze_req = (state == FREEZE_WAIT) ||
 
 assign state_addr = word_count;
 assign state_wr = (state == SAVE_WAIT) || (state == SAVE_CAPTURE);  // Reading from core
-assign state_rd = (state == LOAD_READ) && DDRAM_DOUT_READY;
 assign state_dout = state_data_reg;
 // Write enable is held for two cycles so every region can latch the data.
 assign state_we = (state == LOAD_DATA_READY) || (state == LOAD_RESTORE);
@@ -190,7 +187,6 @@ always @(posedge clk) begin
 
 	DDRAM_RD <= 0;
 	DDRAM_WE <= 0;
-	data_ready <= 0;
 	ss_save_done <= 0;
 	ss_load_done <= 0;
 
@@ -281,7 +277,6 @@ always @(posedge clk) begin
 					if(word_count[0] == 0) begin
 						// First word of the pair is buffered.
 						data_buffer[31:0] <= state_din;
-						data_ready <= 1;
 						word_count <= word_count + 1'd1;
 						wait_count <= 0;
 						state <= SAVE_WAIT;
@@ -383,11 +378,7 @@ always @(posedge clk) begin
 				// No abort when freeze_ack drops. freeze_ack is combinational and can drop
 				// briefly while the core stays frozen, and an abort would leave the core
 				// half restored. The timeout still catches a stuck transfer.
-				if(1'b0) begin
-					state <= UNFREEZE;
-					unfreeze_delay <= 0;
-				end
-				else if(DDRAM_DOUT_READY) begin
+				if(DDRAM_DOUT_READY) begin
 					// Header check. The first DDR3 read of the payload holds both header words:
 					//   DDRAM_DOUT[31:0]  = word 0 = SS_MAGIC, "MCSS"
 					//   DDRAM_DOUT[63:32] = word 1 = {SS_VERSION[7:0], SS_FULL_SIZE[23:0]}
@@ -414,33 +405,18 @@ always @(posedge clk) begin
 			end
 
 			LOAD_DATA_READY: begin
-				// No abort when freeze_ack drops, see LOAD_READ_WAIT.
-				if(1'b0) begin
-					state <= UNFREEZE;
-					unfreeze_delay <= 0;
-				end else begin
-					// Data is stable in state_data_reg.
-					state <= LOAD_RESTORE;
-				end
+				// Data is stable in state_data_reg. No abort when freeze_ack drops, see
+				// LOAD_READ_WAIT.
+				state <= LOAD_RESTORE;
 			end
 
 			LOAD_RESTORE: begin
-				// No abort when freeze_ack drops, see LOAD_READ_WAIT.
-				if(1'b0) begin
-					state <= UNFREEZE;
-					unfreeze_delay <= 0;
-				end else begin
-					// state_we is active with stable data and address.
-					state <= LOAD_WRITE_WAIT;
-				end
+				// state_we is active with stable data and address.
+				state <= LOAD_WRITE_WAIT;
 			end
 
 			LOAD_WRITE_WAIT: begin
-				// No abort when freeze_ack drops, see LOAD_READ_WAIT.
-				if(1'b0) begin
-					state <= UNFREEZE;
-					unfreeze_delay <= 0;
-				end else if(state_ready) begin
+				if(state_ready) begin
 					// state_ready holds this state until a slow SDRAM region accepts
 					// the write.
 					word_count <= word_count + 1'd1;

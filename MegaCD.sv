@@ -1682,7 +1682,7 @@ wire        ss_busy;
 wire        ss_save_done, ss_load_done;
 wire        ss_freeze_req;
 wire [31:0] ss_state_addr;
-wire        ss_state_wr, ss_state_rd, ss_state_we;
+wire        ss_state_wr, ss_state_we;
 wire [31:0] ss_state_dout;
 
 // savestate_ui. F1 to F4 load slots 1 to 4 and Alt with F1 to F4 saves.
@@ -2093,8 +2093,10 @@ assign ss_s68k_addr    = 8'(ss_state_addr - SS_OFF_S68K_REGS);
 assign ss_s68k_wr_data = ss_state_dout[15:0];
 
 // ss_wr_en may only pulse while the CPU is frozen. The engine asserts state_we
-// only in LOAD_DATA_READY and LOAD_RESTORE, which require freeze_ack, and
-// freeze_ack includes both CPUs' frozen reports.
+// only in LOAD_DATA_READY and LOAD_RESTORE. It reaches them from LOAD_READ, which
+// waits for freeze_ack (both CPUs' frozen reports are part of it) before each word.
+// They do not check freeze_ack themselves: freeze_req stays high for the whole
+// load, so the CPUs stay frozen.
 assign ss_m68k_wr_en   = ss_state_we & ss_sel_m68k;
 assign ss_s68k_wr_en   = ss_state_we & ss_sel_s68k;
 
@@ -2188,7 +2190,6 @@ savestate savestate_inst
 
 	.state_addr(ss_state_addr),
 	.state_wr(ss_state_wr),
-	.state_rd(ss_state_rd),
 	.state_din(ss_state_din),
 	.state_dout(ss_state_dout),
 	.state_we(ss_state_we),

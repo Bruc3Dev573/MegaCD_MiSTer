@@ -60,7 +60,7 @@ savestate dut (
 	.ss_slot(2'd1), .ss_save(1'b0), .ss_load(ss_load), .state_size(WORDS),
 	.ss_busy(ss_busy), .ss_save_done(), .ss_load_done(ss_load_done),
 	.freeze_req(freeze_req), .freeze_ack(freeze_ack),
-	.state_addr(), .state_wr(), .state_rd(), .state_din(32'd0),
+	.state_addr(), .state_wr(), .state_din(32'd0),
 	.state_dout(), .state_we(), .state_ready(1'b1), .load_hold(load_hold),
 	.hdr_magic(MAGIC), .hdr_version(VERSION), .hdr_size(WORDS)
 );
