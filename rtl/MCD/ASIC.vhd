@@ -1672,6 +1672,9 @@ begin
 					when x"03" =>
 						DMAA <= SS_WR_DATA(15 downto 0);
 						CFS  <= SS_WR_DATA(23 downto 16);
+					when x"04" =>
+						--HIB, the low half, belongs to the main-CPU register process.
+						SB <= SS_WR_DATA(31 downto 16);
 					when x"05" =>
 						TM  <= SS_WR_DATA(7 downto 0);
 						IEN <= SS_WR_DATA(13 downto 8);
