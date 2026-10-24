@@ -730,8 +730,10 @@ begin
 		--w50 and w51 CDD command
 		CDDC(31 downto 0)                      when SS_ADDR = x"32" else
 		x"000000" & CDDC(39 downto 32)         when SS_ADDR = x"33" else
-		--w52 timer and interrupts
-		"000" & std_logic_vector(TIME_CLK_CNT) & INT_ACK & INT_PEND &
+		--w52 timer and interrupts. Bits 31 and 30: a timer reload (FF8030) and a stopwatch
+		--clear (FF800C) written and not yet taken by the 30.72 us tick, which stops while
+		--the sub-CPU is parked. Older images hold 0 there: nothing pending.
+		TIMER_SET & SW_CLR & "0" & std_logic_vector(TIME_CLK_CNT) & INT_ACK & INT_PEND &
 		std_logic_vector(TIMER)
 			when SS_ADDR = x"34" else
 		--w53 halt and reset handshake that cannot be derived
@@ -1698,6 +1700,8 @@ begin
 						INT_PEND(4)  <= SS_WR_DATA(11);
 						INT_PEND(3)  <= SS_WR_DATA(10);
 						TIME_CLK_CNT <= unsigned(SS_WR_DATA(28 downto 20));
+						SW_CLR       <= SS_WR_DATA(30);
+						TIMER_SET    <= SS_WR_DATA(31);
 					when x"35" =>
 						SUB_RST_EXEC <= SS_WR_DATA(1);
 					when x"36" =>
