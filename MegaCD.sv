@@ -36,7 +36,6 @@ assign LED_USER  = rom_download | sav_pending;
 
 assign VGA_SCALER= 0;
 assign VGA_DISABLE = 0;
-assign HDMI_FREEZE = 0;
 assign HDMI_BLACKOUT = 0;
 assign HDMI_BOB_DEINT = 0;
 
@@ -259,7 +258,7 @@ localparam CONF_STR = {
 	"Save to state 4,",
 	"Restore state 4;",
 	//"R1,Reset;"
-	"J1,A,B,C,Start,Mode,X,Y,Z,Savestate;",
+	"J1,A,B,C,Start,Mode,X,Y,Z,Savestate,Pause;",
 	"jn,A,B,R,Start,Select,X,Y,L;", // name map to SNES layout.
 	"jp,Y,B,A,Start,Select,L,X,R;", // positional map to SNES layout (3 button friendly)  
 	"V,v",`BUILD_DATE
@@ -271,7 +270,8 @@ wire [127:0] status;
 wire        ss_info_req;   // driven by savestate_ui
 wire  [7:0] ss_info;
 wire  [1:0] buttons;
-wire [12:0] joystick_0,joystick_1,joystick_2,joystick_3,joystick_4;
+wire [13:0] joystick_0;    // bit 12 Savestate, bit 13 Pause
+wire [12:0] joystick_1,joystick_2,joystick_3,joystick_4;
 wire  [7:0] joy0_x,joy0_y,joy1_x,joy1_y;
 wire        ioctl_download;
 wire        ioctl_wr;
@@ -1247,6 +1247,9 @@ video_mixer #(.LINE_LENGTH(320), .HALF_DEPTH(0), .GAMMA(1)) video_mixer
 	.scandoubler(~interlace && (scale || forced_scandoubler)),
 	.hq2x(scale==1),
 	.freeze_sync(),
+	// HDMI shows the scaler's last frame while paused (HDMI_FREEZE). The direct analog
+	// output keeps the live picture, so the mixer's own freeze (black + sync) stays off.
+	.HDMI_FREEZE(1'b0),
 
 	.VGA_DE(vga_de),
 	.R((lg_target && gun_mode && (~&status[44:43])) ? {8{lg_target[0]}} : red),
@@ -1678,7 +1681,9 @@ localparam [31:0] SS_FULL_SIZE     = SS_OFF_MISC      + SS_MISC_SIZE; // 558430
 
 wire        ss_busy;
 wire        ss_save_done, ss_load_done;
-wire        ss_freeze_req;
+wire        ss_eng_freeze_req;
+reg         btn_pause = 0;   // Pause button, see pausekey
+wire        ss_freeze_req = ss_eng_freeze_req | btn_pause;
 wire [31:0] ss_state_addr;
 wire        ss_state_wr, ss_state_we;
 wire [31:0] ss_state_dout;
@@ -1823,6 +1828,37 @@ end
 // dropping and the hold being registered, so the CPUs never see a gap.
 wire ss_hold_any   = (ss_freeze_active & ~ss_freeze_req) | ss_resume_hold;
 wire ss_cpu_freeze = ss_freeze_req | ss_hold_any;
+
+// Pause button, J1 bit 13. It holds the core through the savestate freeze, so the
+// pause starts at the next VBlank with both CPUs parked and the sound and CD parts
+// stopped, and it ends at the raster phase where it started. A save keeps the pause.
+// A load ends it once the engine holds the freeze, and reset ends it.
+reg pause_load = 0;
+always @(posedge clk_sys) begin : pausekey
+	reg old_state;
+	old_state <= joystick_0[13];
+	if (reset | rom_download) begin
+		btn_pause  <= 0;
+		pause_load <= 0;
+	end
+	else if (pause_load) begin
+		if (ss_eng_freeze_req) begin btn_pause <= 0; pause_load <= 0; end
+		else if (~ss_busy & ~ss_load_req) pause_load <= 0;   // the load did not start
+	end
+	else if (btn_pause & ss_load_req) pause_load <= 1;
+	else if (~old_state & joystick_0[13]) btn_pause <= ~btn_pause;
+end
+
+// The raster runs on while paused without the CPUs, so HDMI keeps the last complete
+// frame until the first VBlank after the core runs again.
+reg pause_vid = 0;
+always @(posedge clk_sys) begin : pausevid
+	reg old_vbl;
+	old_vbl <= vblank;
+	if (btn_pause) pause_vid <= 1;
+	else if (~ss_cpu_freeze & vblank & ~old_vbl) pause_vid <= 0;
+end
+assign HDMI_FREEZE = pause_vid;
 
 
 // Region decode.
@@ -2183,8 +2219,8 @@ savestate savestate_inst
 	.ss_load_done(ss_load_done),
 	.load_hold(ss_load_pending),
 
-	.freeze_req(ss_freeze_req),
-	.freeze_ack(ss_freeze_ack),
+	.freeze_req(ss_eng_freeze_req),
+	.freeze_ack(ss_freeze_ack & ss_eng_freeze_req),   // the engine sees its own freeze end while paused
 
 	.state_addr(ss_state_addr),
 	.state_wr(ss_state_wr),
